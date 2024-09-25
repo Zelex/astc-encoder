@@ -65,6 +65,9 @@ correctly on GPU hardware without HDR profile support. The -*h options
 configure the compressor for HDR RGB components and an LDR alpha component.
 The -*H options configure the compressor for HDR across all 4 components.
 
+Additional options:
+  -lz                   : Optimize compressed output for LZ compression
+
 For full help documentation run 'astcenc -help'.
 )";
 
@@ -447,7 +450,12 @@ R"(
            Error messages will always be printed, as will mandatory outputs
            for the selected operation mode. For example, the test mode will
            always output image quality metrics and compression time but
-           will suppress all other output.)"
+           will suppress all other output.
+          
+       -lz
+           Optimize the compressed output for better LZ compression. This
+           reorders the compressed blocks to improve compressibility, which
+           may be beneficial when further compressing the ASTC data.)"
 // This split in the literals is needed for Visual Studio; the compiler
 // will concatenate these two strings together ...
 R"(

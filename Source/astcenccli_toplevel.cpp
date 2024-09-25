@@ -1183,6 +1183,11 @@ static int edit_astcenc_config(
 			argidx += 1;
 			cli_config.diagnostic_images = true;
 		}
+		else if (!strcmp(argv[argidx], "-lz"))
+		{
+			argidx++;
+			cli_config.lz_optimize = true;
+		}
 		else // check others as well
 		{
 			print_error("ERROR: Argument '%s' not recognized\n", argv[argidx]);
@@ -2223,6 +2228,15 @@ int astcenc_main(
 		image_comp.dim_z = image_uncomp_in->dim_z;
 		image_comp.data = buffer;
 		image_comp.data_len = buffer_size;
+
+		if (cli_config.lz_optimize)
+		{
+			if (!cli_config.silentmode)
+			{
+				printf("Optimizing for LZ compression\n");
+			}
+			optimize_for_lz(image_comp.data, image_comp.data_len, 16);  // ASTC blocks are typically 16 bytes
+		}
 	}
 
 	// Decompress an image

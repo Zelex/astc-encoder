@@ -89,11 +89,14 @@ struct cli_config_options
 	/** @brief The high exposure fstop for error computation. */
 	int high_fstop;
 
-	/** @brief The  pre-encode swizzle. */
+	/** @brief The pre-encode swizzle. */
 	astcenc_swizzle swz_encode;
 
-	/** @brief The  post-decode swizzle. */
+	/** @brief The post-decode swizzle. */
 	astcenc_swizzle swz_decode;
+
+	/** @brief Do a second pass over the data with LZ optimization. */
+	bool lz_optimize;
 };
 
 /**
@@ -418,5 +421,19 @@ void set_thread_name(
 int astcenc_main(
 	int argc,
 	char **argv);
+
+/**
+ * @brief Optimize compressed data for better LZ compression.
+ *
+ * @param data          The compressed image data.
+ * @param data_len      The length of the compressed data.
+ * @param block_size    The size of each compressed block (typically 16 bytes for ASTC).
+ */
+void optimize_for_lz(
+    uint8_t* data,
+    size_t data_len,
+    size_t block_size
+);
+
 
 #endif
