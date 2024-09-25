@@ -11,7 +11,7 @@
 #define popcountll __builtin_popcountll
 #endif
 
-struct unique_bits_t { // Corrected struct name
+struct unique_bits_t { 
     long long bits;
     int count;
 };
@@ -46,10 +46,10 @@ void optimize_for_lz(
     size_t block_size
 ) {
     // Gather up all the block indices (second 8-bytes). Sort them by frequency.
-    size_t num_blocks = data_len / block_size; // Changed to size_t
+    size_t num_blocks = data_len / block_size;
     long long *bits = new long long[num_blocks];
     unique_bits_t *unique_bits = new unique_bits_t[num_blocks];
-    size_t num_unique_bits = 0; // Changed to size_t
+    size_t num_unique_bits = 0;
 
     // Count the frequency of each bit pattern
     for (size_t i = 0; i < num_blocks; i++) { // Changed to size_t
@@ -58,7 +58,7 @@ void optimize_for_lz(
 
     qsort(bits, num_blocks, sizeof(long long), compare_long_long);
 
-    for (size_t i = 0; i < num_blocks; i++) { // Changed to size_t
+    for (size_t i = 0; i < num_blocks; i++) {
         if (i > 0 && bits[i] == bits[i - 1]) {
             unique_bits[num_unique_bits - 1].count++;
         } else {
@@ -72,13 +72,13 @@ void optimize_for_lz(
     qsort(unique_bits, num_unique_bits, sizeof(unique_bits_t), compare_unique_bits);
 
     // In the original data, now find the bits that most resemble the unique bits in the first N spots, and replace them
-    size_t N = (256 < num_unique_bits) ? 256 : num_unique_bits; // Replaced std::min with ternary operator
-    for (size_t i = 0; i < num_blocks; i++) { // Changed to size_t
+    size_t N = (256 < num_unique_bits) ? 256 : num_unique_bits; 
+    for (size_t i = 0; i < num_blocks; i++) {
         long long current_bits = *((long long*)(data + i * block_size + 8));
         size_t best_match = -1;
         long long best_match_diff = 16; // Maximum possible difference. 64 is best of 256, 16 is best of 256 otherwise keep
 
-        for (size_t j = 0; j < N; j++) { // Changed to size_t
+        for (size_t j = 0; j < N; j++) {
             long long diff = popcountll(current_bits ^ unique_bits[j].bits);
             if (diff < best_match_diff) {
                 best_match = j;
