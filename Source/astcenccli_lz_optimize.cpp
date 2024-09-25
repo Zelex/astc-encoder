@@ -52,7 +52,7 @@ void optimize_for_lz(
     size_t num_unique_bits = 0;
 
     // Count the frequency of each bit pattern
-    for (size_t i = 0; i < num_blocks; i++) { // Changed to size_t
+    for (size_t i = 0; i < num_blocks; i++) { 
         bits[i] = *((long long*)(data + i * block_size + 8));
     }
 
