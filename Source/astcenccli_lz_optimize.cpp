@@ -123,12 +123,12 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
 
     const int block_size = 16;
-    const long long INDEX_MASK = 0x0000FFFFFFFFFFF;
+    const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFF;
     const int BITS_OFFSET = 8;
     const float BASE_MSE_THRESHOLD = 4.0f;
     const float MAX_MSE_THRESHOLD = 64.0f;
     const float GRADIENT_SCALE = 10.0f;
-    const float TEMPERATURE = 1.0f;
+    const float TEMPERATURE = 0.0f;
 
     // Gather up all the block indices (second 8-bytes). Sort them by frequency.
     size_t num_blocks = data_len / block_size;
@@ -201,7 +201,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             float random_factor = ((float)rand() / (float)RAND_MAX) * TEMPERATURE;
             float adjusted_mse = mse + random_factor;
 
-            if (adjusted_mse < best_mse && adjusted_mse < adjusted_mse_threshold) {
+            if (adjusted_mse < best_mse && mse < adjusted_mse_threshold) {
                 best_match = unique_bits[j].bits;
                 best_mse = adjusted_mse;
             }
