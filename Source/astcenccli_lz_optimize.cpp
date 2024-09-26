@@ -125,9 +125,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     const int block_size = 16;
     const long long INDEX_MASK = 0x0000FFFFFFFFFFF;
     const int BITS_OFFSET = 8;
-    const float BASE_MSE_THRESHOLD = 2.0f;
+    const float BASE_MSE_THRESHOLD = 4.0f;
     const float MAX_MSE_THRESHOLD = 64.0f;
     const float GRADIENT_SCALE = 10.0f;
+    const float TEMPERATURE = 1.0f;
 
     // Gather up all the block indices (second 8-bytes). Sort them by frequency.
     size_t num_blocks = data_len / block_size;
@@ -162,8 +163,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         //printf("Bit pattern: %llx, Frequency: %d\n", unique_bits[i].bits, unique_bits[i].count);
     //}
 
-	uint8_t original_decoded[16 * 16 * 4] = { 0 };
-    uint8_t modified_decoded[16 * 16 * 4] = { 0 };
+	uint8_t original_decoded[6 * 6 * 6] = { 0 };
+    uint8_t modified_decoded[6 * 6 * 6] = { 0 };
 
     // In the original data, now find the bits that most resemble the unique bits in the first N spots, and replace them
     for (size_t i = 0; i < num_blocks; i++) {
@@ -195,10 +196,15 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 			astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
 			float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
-			if (mse < best_mse && mse < adjusted_mse_threshold) {
-				best_match = unique_bits[j].bits;
-				best_mse = mse;
-			}
+
+            // Introduce temperature by adding random factor to MSE
+            float random_factor = ((float)rand() / (float)RAND_MAX) * TEMPERATURE;
+            float adjusted_mse = mse + random_factor;
+
+            if (adjusted_mse < best_mse && adjusted_mse < adjusted_mse_threshold) {
+                best_match = unique_bits[j].bits;
+                best_mse = adjusted_mse;
+            }
         }
 
         if (best_match != masked_current_bits) {
