@@ -27,13 +27,22 @@ typedef struct {
     int count;
 } unique_bits_t;
 
-void mtf_ll_init(MTF_LL* mtf) {
+static inline float log2_fast(float val) {
+    union { float val; int x; } u = { val };
+    float log_2 = (float)(((u.x >> 23) & 255) - 128);              
+    u.x   &= ~(255 << 23);
+    u.x   += 127 << 23;
+    log_2 += ((-0.3358287811f) * u.val + 2.0f) * u.val  -0.65871759316667f; 
+    return log_2;
+} 
+
+static void mtf_ll_init(MTF_LL* mtf) {
     mtf->size = 0;
     memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
 }
 
 // Search for a value in the MTF list
-int mtf_ll_search(MTF_LL* mtf, long long value) {
+static int mtf_ll_search(MTF_LL* mtf, long long value) {
     for (int i = 0; i < mtf->size; i++) {
         if (mtf->list[i] == value) {
             return i;
@@ -42,7 +51,7 @@ int mtf_ll_search(MTF_LL* mtf, long long value) {
     return -1;
 }
 
-int mtf_ll_encode(MTF_LL* mtf, long long value) {
+static int mtf_ll_encode(MTF_LL* mtf, long long value) {
     int pos = mtf_ll_search(mtf, value);
     
     if (pos == -1) {
@@ -62,11 +71,11 @@ int mtf_ll_encode(MTF_LL* mtf, long long value) {
     return pos;
 }
 
-bool mtf_ll_contains(MTF_LL* mtf, long long value) {
+static bool mtf_ll_contains(MTF_LL* mtf, long long value) {
     return mtf_ll_search(mtf, value) != -1;
 }
 
-int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
+static int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
     int pos = mtf_ll_search(mtf, value);
     if (pos != -1) {
         return pos;
@@ -74,17 +83,17 @@ int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf) {
+static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf) {
     if (is_literal) {
         float total_entropy = 0.0f;
         for (int i = 0; i < 8; i++) {
             uint8_t byte = (literal_value >> (i * 8)) & 0xFF;
             float prob = (float)mtf->literal_histogram[byte] / (MTF_SIZE * 8);
-            total_entropy += -log2f(prob);
+            total_entropy += -log2_fast(prob);
         }
         return 1.0f + total_entropy; // flag bit + entropy-coded value
     } else {
-        return log2f((float)(mtf_value + 1)); // Cost for an MTF value
+        return log2_fast((float)(mtf_value + 1)); // Cost for an MTF value
     }
 }
 
@@ -133,7 +142,7 @@ static float calculate_gradient_magnitude(const uint8_t* img, int width, int hei
     return total_magnitude / (width * height * channels);
 }
 
-void astc_decompress_block(
+static void astc_decompress_block(
     const block_size_descriptor& bsd,
     const uint8_t* block_ptr,
     uint8_t* output,
@@ -178,7 +187,7 @@ void astc_decompress_block(
     }
 }
 
-void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
+static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
     for (int i = 0; i < 8; i++) {
         uint8_t byte = (value >> (i * 8)) & 0xFF;
         mtf->literal_histogram[byte]++;
