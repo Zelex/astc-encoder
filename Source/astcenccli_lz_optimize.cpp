@@ -19,6 +19,7 @@
 typedef struct {
     long long list[MTF_SIZE];
     int size;
+    int literal_histogram[256]; // Single histogram for all bytes
 } MTF_LL;
 
 typedef struct { 
@@ -28,6 +29,7 @@ typedef struct {
 
 void mtf_ll_init(MTF_LL* mtf) {
     mtf->size = 0;
+    memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
 }
 
 // Search for a value in the MTF list
@@ -72,13 +74,17 @@ int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-float calculate_bit_cost(int mtf_value, bool is_literal) {
+float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf) {
     if (is_literal) {
-        // Cost for a literal: flag bit + actual value
-        return 1.0f + LOG2_MTF_SIZE;
+        float total_entropy = 0.0f;
+        for (int i = 0; i < 8; i++) {
+            uint8_t byte = (literal_value >> (i * 8)) & 0xFF;
+            float prob = (float)mtf->literal_histogram[byte] / (MTF_SIZE * 8);
+            total_entropy += -log2f(prob);
+        }
+        return 1.0f + total_entropy; // flag bit + entropy-coded value
     } else {
-        // Cost for an MTF value: log2 of the position + 1 (1-based indexing)
-        return log2f((float)(mtf_value + 1));
+        return log2f((float)(mtf_value + 1)); // Cost for an MTF value
     }
 }
 
@@ -247,7 +253,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 		astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
 
         float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, masked_current_bits), 
-                                                     !mtf_ll_contains(&global_mtf, masked_current_bits));
+                                                     !mtf_ll_contains(&global_mtf, masked_current_bits),
+                                                     masked_current_bits, &global_mtf);
 
         // Calculate gradient magnitude of the original block
         float gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
@@ -272,7 +279,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             // Calculate bit cost for the modified block
             long long modified_bits = unique_bits[j].bits & INDEX_MASK;
             float modified_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, modified_bits), 
-                                                         !mtf_ll_contains(&global_mtf, modified_bits));
+                                                         !mtf_ll_contains(&global_mtf, modified_bits),
+                                                         modified_bits, &global_mtf);
 
             // Calculate rate-distortion cost
             float rd_cost = mse + LAMBDA * (modified_bit_cost - original_bit_cost);
@@ -290,6 +298,13 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         }
 
         // Update the global MTF with the chosen bits
+        if (!mtf_ll_contains(&global_mtf, best_match & INDEX_MASK)) {
+            // If it's a new literal, update the histogram for each byte
+            for (int k = 0; k < 8; k++) {
+                uint8_t byte = (best_match >> (k * 8)) & 0xFF;
+                global_mtf.literal_histogram[byte]++;
+            }
+        }
         mtf_ll_encode(&global_mtf, best_match & INDEX_MASK);
     }
 
