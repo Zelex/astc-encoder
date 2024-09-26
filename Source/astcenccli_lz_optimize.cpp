@@ -51,6 +51,45 @@ static inline float calculate_mse(const uint8_t* img1, const uint8_t* img2, int 
     return (float)sum / total;
 }
 
+static inline float calculate_variance(const uint8_t* img, int total) {
+    float mean = 0.0f;
+    float variance = 0.0f;
+    
+    // Calculate mean
+    for (int i = 0; i < total; i++) {
+        mean += img[i];
+    }
+    mean /= total;
+    
+    // Calculate variance
+    for (int i = 0; i < total; i++) {
+        float diff = img[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= total;
+    
+    return variance;
+}
+
+static float calculate_gradient_magnitude(const uint8_t* img, int width, int height) {
+    float total_magnitude = 0.0f;
+    int channels = 4; // Assuming RGBA
+
+    for (int y = 1; y < height - 1; y++) {
+        for (int x = 1; x < width - 1; x++) {
+            for (int c = 0; c < channels; c++) {
+                float gx = (float)img[((y * width + x + 1) * channels) + c] - 
+                           (float)img[((y * width + x - 1) * channels) + c];
+                float gy = (float)img[(((y + 1) * width + x) * channels) + c] - 
+                           (float)img[(((y - 1) * width + x) * channels) + c];
+                total_magnitude += sqrtf(gx * gx + gy * gy);
+            }
+        }
+    }
+
+    return total_magnitude / (width * height * channels);
+}
+
 void astc_decompress_block(
     const block_size_descriptor& bsd,
     const uint8_t* block_ptr,
@@ -114,7 +153,9 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     const int block_size = 16;
     const long long INDEX_MASK = 0x0000FFFFFFFFFFF;
     const int BITS_OFFSET = 8;
-    const float MSE_THRESHOLD = 8;
+    const float BASE_MSE_THRESHOLD = 2.0f;
+    const float MAX_MSE_THRESHOLD = 64.0f;
+    const float GRADIENT_SCALE = 10.0f;
 
     // Gather up all the block indices (second 8-bytes). Sort them by frequency.
     size_t num_blocks = data_len / block_size;
@@ -163,6 +204,15 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 		// When calling astc_decompress_block, pass the bsd
 		astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
 
+        // Calculate gradient magnitude of the original block
+        float gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
+        
+        // Adjust MSE_THRESHOLD based on gradient magnitude
+        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);  // Normalize to [0, 1]
+        float gradient_factor = expf(GRADIENT_SCALE * normalized_gradient) - 1.0f;
+        float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
+        adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
+
         for (size_t j = 0; j < N; j++) {
 			// Create a temporary modified block
 			uint8_t temp_block[16];  // Assuming 16-byte ASTC blocks
@@ -173,7 +223,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 			astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
 			float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
-			if (mse < best_mse && mse < MSE_THRESHOLD) {
+			if (mse < best_mse && mse < adjusted_mse_threshold) {
 				best_match = unique_bits[j].bits;
 				best_mse = mse;
 			}
