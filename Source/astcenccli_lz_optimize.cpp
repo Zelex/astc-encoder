@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <math.h>
 #include "astcenc.h"
 #include "astcenccli_internal.h"
 #include "astcenc_internal_entry.h"
@@ -12,10 +13,74 @@
 #define popcountll __builtin_popcountll
 #endif
 
-struct unique_bits_t { 
+#define MTF_SIZE 256
+#define LOG2_MTF_SIZE 8
+
+typedef struct {
+    long long list[MTF_SIZE];
+    int size;
+} MTF_LL;
+
+typedef struct { 
     long long bits;
     int count;
-};
+} unique_bits_t;
+
+void mtf_ll_init(MTF_LL* mtf) {
+    mtf->size = 0;
+}
+
+// Search for a value in the MTF list
+int mtf_ll_search(MTF_LL* mtf, long long value) {
+    for (int i = 0; i < mtf->size; i++) {
+        if (mtf->list[i] == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int mtf_ll_encode(MTF_LL* mtf, long long value) {
+    int pos = mtf_ll_search(mtf, value);
+    
+    if (pos == -1) {
+        // Value not found, add it to the front
+        if (mtf->size < MTF_SIZE) {
+            mtf->size++;
+        }
+        pos = mtf->size - 1;
+    }
+
+    // Move the value to the front
+    for (int i = pos; i > 0; i--) {
+        mtf->list[i] = mtf->list[i - 1];
+    }
+    mtf->list[0] = value;
+    
+    return pos;
+}
+
+bool mtf_ll_contains(MTF_LL* mtf, long long value) {
+    return mtf_ll_search(mtf, value) != -1;
+}
+
+int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
+    int pos = mtf_ll_search(mtf, value);
+    if (pos != -1) {
+        return pos;
+    }
+    return mtf->size; // Return size if not found (which would be its position if added)
+}
+
+float calculate_bit_cost(int mtf_value, bool is_literal) {
+    if (is_literal) {
+        // Cost for a literal: flag bit + actual value
+        return 1.0f + LOG2_MTF_SIZE;
+    } else {
+        // Cost for an MTF value: log2 of the position + 1 (1-based indexing)
+        return log2f((float)(mtf_value + 1));
+    }
+}
 
 static int compare_long_long(const void *a, const void *b) {
     long long l1 = *((long long*)a);
@@ -123,18 +188,22 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
 
     const int block_size = 16;
-    const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFF;
+    const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFFull;
     const int BITS_OFFSET = 8;
     const float BASE_MSE_THRESHOLD = 4.0f;
-    const float MAX_MSE_THRESHOLD = 64.0f;
+    const float MAX_MSE_THRESHOLD = 128.0f;
     const float GRADIENT_SCALE = 10.0f;
     const float TEMPERATURE = 0.0f;
+    const float LAMBDA = 0.1f; // Rate-distortion trade-off parameter
 
     // Gather up all the block indices (second 8-bytes). Sort them by frequency.
     size_t num_blocks = data_len / block_size;
     long long *bits = new long long[num_blocks];
     unique_bits_t *unique_bits = new unique_bits_t[num_blocks];
     size_t num_unique_bits = 0;
+
+    MTF_LL global_mtf;
+    mtf_ll_init(&global_mtf);
 
     // Count the frequency of each bit pattern
     for (size_t i = 0; i < num_blocks; i++) { 
@@ -172,10 +241,13 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
         long long masked_current_bits = current_bits & INDEX_MASK;
         size_t best_match = masked_current_bits;
-        float best_mse = FLT_MAX;
+        float best_rd_cost = FLT_MAX;
 
 		// When calling astc_decompress_block, pass the bsd
 		astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
+
+        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, masked_current_bits), 
+                                                     !mtf_ll_contains(&global_mtf, masked_current_bits));
 
         // Calculate gradient magnitude of the original block
         float gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
@@ -197,13 +269,17 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
 			float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
 
-            // Introduce temperature by adding random factor to MSE
-            float random_factor = ((float)rand() / (float)RAND_MAX) * TEMPERATURE;
-            float adjusted_mse = mse + random_factor;
+            // Calculate bit cost for the modified block
+            long long modified_bits = unique_bits[j].bits & INDEX_MASK;
+            float modified_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, modified_bits), 
+                                                         !mtf_ll_contains(&global_mtf, modified_bits));
 
-            if (adjusted_mse < best_mse && mse < adjusted_mse_threshold) {
+            // Calculate rate-distortion cost
+            float rd_cost = mse + LAMBDA * (modified_bit_cost - original_bit_cost);
+
+            if (rd_cost < best_rd_cost && mse < adjusted_mse_threshold) {
                 best_match = unique_bits[j].bits;
-                best_mse = adjusted_mse;
+                best_rd_cost = rd_cost;
             }
         }
 
@@ -212,6 +288,9 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             long long new_bits = (current_bits & ~INDEX_MASK) | (best_match & INDEX_MASK);
             *((long long*)(data + i * block_size + BITS_OFFSET)) = new_bits;
         }
+
+        // Update the global MTF with the chosen bits
+        mtf_ll_encode(&global_mtf, best_match & INDEX_MASK);
     }
 
     // Clean up
