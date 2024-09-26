@@ -223,8 +223,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     MTF_LL global_mtf;
     mtf_ll_init(&global_mtf);
 
-    uint8_t original_decoded[6 * 6 * 6] = { 0 };
-    uint8_t modified_decoded[6 * 6 * 6] = { 0 };
+    uint8_t original_decoded[6 * 6 * 6 * 4] = { 0 };
+    uint8_t modified_decoded[6 * 6 * 6 * 4] = { 0 };
 
     // In the original data, now search the MTF list for potential replacements
     for (size_t i = 0; i < num_blocks; i++) {
