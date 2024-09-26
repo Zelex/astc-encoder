@@ -12,18 +12,10 @@
 #define popcountll __builtin_popcountll
 #endif
 
-struct astc_block_t {
-    unsigned char data[16];
-};
-
 struct unique_bits_t { 
     long long bits;
     int count;
 };
-
-static __forceinline int bitfield_extract(uint64_t bitfield, int start, int count) {
-    return (int)((bitfield >> start) & ((1ull << count) - 1));
-}
 
 static int compare_long_long(const void *a, const void *b) {
     long long l1 = *((long long*)a);
@@ -49,26 +41,6 @@ static inline float calculate_mse(const uint8_t* img1, const uint8_t* img2, int 
         sum += diff * diff;
     }
     return (float)sum / total;
-}
-
-static inline float calculate_variance(const uint8_t* img, int total) {
-    float mean = 0.0f;
-    float variance = 0.0f;
-    
-    // Calculate mean
-    for (int i = 0; i < total; i++) {
-        mean += img[i];
-    }
-    mean /= total;
-    
-    // Calculate variance
-    for (int i = 0; i < total; i++) {
-        float diff = img[i] - mean;
-        variance += diff * diff;
-    }
-    variance /= total;
-    
-    return variance;
 }
 
 static float calculate_gradient_magnitude(const uint8_t* img, int width, int height) {
