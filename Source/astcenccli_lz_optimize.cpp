@@ -13,7 +13,7 @@
 #define popcountll __builtin_popcountll
 #endif
 
-#define MTF_SIZE 256
+#define MTF_SIZE 1024
 #define LOG2_MTF_SIZE 8
 
 typedef struct {
@@ -178,6 +178,13 @@ void astc_decompress_block(
     }
 }
 
+void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
+    for (int i = 0; i < 8; i++) {
+        uint8_t byte = (value >> (i * 8)) & 0xFF;
+        mtf->literal_histogram[byte]++;
+    }
+}
+
 /**
  * @brief Optimize compressed data for better LZ compression.
  *
@@ -202,55 +209,23 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     const float TEMPERATURE = 0.0f;
     const float LAMBDA = 0.1f; // Rate-distortion trade-off parameter
 
-    // Gather up all the block indices (second 8-bytes). Sort them by frequency.
     size_t num_blocks = data_len / block_size;
-    long long *bits = new long long[num_blocks];
-    unique_bits_t *unique_bits = new unique_bits_t[num_blocks];
-    size_t num_unique_bits = 0;
 
     MTF_LL global_mtf;
     mtf_ll_init(&global_mtf);
 
-    // Count the frequency of each bit pattern
-    for (size_t i = 0; i < num_blocks; i++) { 
-        bits[i] = *((long long*)(data + i * block_size + BITS_OFFSET)) & INDEX_MASK;
-    }
-
-    qsort(bits, num_blocks, sizeof(long long), compare_long_long);
-
-    for (size_t i = 0; i < num_blocks; i++) {
-        if (i > 0 && bits[i] == bits[i - 1]) {
-            unique_bits[num_unique_bits - 1].count++;
-        } else {
-            unique_bits[num_unique_bits].bits = bits[i];
-            unique_bits[num_unique_bits].count = 1;
-            num_unique_bits++;
-        }
-    }
-
-    // Sort the unique bit patterns by frequency using qsort
-    qsort(unique_bits, num_unique_bits, sizeof(unique_bits_t), compare_unique_bits);
-
-    size_t N = (64 < num_unique_bits) ? 64 : num_unique_bits; 
-
-    // Print the unique bit patterns and their frequencies
-    //for (size_t i = 0; i < N; i++) {
-        //printf("Bit pattern: %llx, Frequency: %d\n", unique_bits[i].bits, unique_bits[i].count);
-    //}
-
-	uint8_t original_decoded[6 * 6 * 6] = { 0 };
+    uint8_t original_decoded[6 * 6 * 6] = { 0 };
     uint8_t modified_decoded[6 * 6 * 6] = { 0 };
 
-    // In the original data, now find the bits that most resemble the unique bits in the first N spots, and replace them
+    // In the original data, now search the MTF list for potential replacements
     for (size_t i = 0; i < num_blocks; i++) {
-		uint8_t *current_block = data + i * block_size;
+        uint8_t *current_block = data + i * block_size;
         long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
         long long masked_current_bits = current_bits & INDEX_MASK;
         size_t best_match = masked_current_bits;
         float best_rd_cost = FLT_MAX;
 
-		// When calling astc_decompress_block, pass the bsd
-		astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
+        astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
 
         float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, masked_current_bits), 
                                                      !mtf_ll_contains(&global_mtf, masked_current_bits),
@@ -260,56 +235,50 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         float gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
         
         // Adjust MSE_THRESHOLD based on gradient magnitude
-        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);  // Normalize to [0, 1]
+        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
         float gradient_factor = expf(GRADIENT_SCALE * normalized_gradient) - 1.0f;
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
 
-        for (size_t j = 0; j < N; j++) {
-			// Create a temporary modified block
-			uint8_t temp_block[16];  // Assuming 16-byte ASTC blocks
-			memcpy(temp_block, current_block, 16);
-			uint64_t *temp_bits = (uint64_t*)(temp_block + BITS_OFFSET);
-			*temp_bits = (*temp_bits & ~INDEX_MASK) | (unique_bits[j].bits & INDEX_MASK);
+        // Search through the MTF list
+        for (int j = 0; j < global_mtf.size; j++) {
+            long long candidate_bits = global_mtf.list[j];
+            
+            // Create a temporary modified block
+            uint8_t temp_block[16];
+            memcpy(temp_block, current_block, 16);
+            uint64_t *temp_bits = (uint64_t*)(temp_block + BITS_OFFSET);
+            *temp_bits = (*temp_bits & ~INDEX_MASK) | (candidate_bits & INDEX_MASK);
 
-			astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
-			float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
+            float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
 
             // Calculate bit cost for the modified block
-            long long modified_bits = unique_bits[j].bits & INDEX_MASK;
-            float modified_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, modified_bits), 
-                                                         !mtf_ll_contains(&global_mtf, modified_bits),
-                                                         modified_bits, &global_mtf);
+            float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf);
 
             // Calculate rate-distortion cost
             float rd_cost = mse + LAMBDA * (modified_bit_cost - original_bit_cost);
 
             if (rd_cost < best_rd_cost && mse < adjusted_mse_threshold) {
-                best_match = unique_bits[j].bits;
+                best_match = candidate_bits;
                 best_rd_cost = rd_cost;
             }
         }
 
         if (best_match != masked_current_bits) {
-            // Replace only the index bits with the best matching frequent pattern
+            // Replace only the index bits with the best matching pattern from MTF
             long long new_bits = (current_bits & ~INDEX_MASK) | (best_match & INDEX_MASK);
             *((long long*)(data + i * block_size + BITS_OFFSET)) = new_bits;
         }
 
         // Update the global MTF with the chosen bits
-        if (!mtf_ll_contains(&global_mtf, best_match & INDEX_MASK)) {
-            // If it's a new literal, update the histogram for each byte
-            for (int k = 0; k < 8; k++) {
-                uint8_t byte = (best_match >> (k * 8)) & 0xFF;
-                global_mtf.literal_histogram[byte]++;
-            }
-        }
         mtf_ll_encode(&global_mtf, best_match & INDEX_MASK);
+
+        // Update the literal histogram with the chosen bits
+        mtf_ll_update_histogram(&global_mtf, best_match & INDEX_MASK);
     }
 
     // Clean up
-    delete[] bits;
-    delete[] unique_bits;
     free(bsd);
 }
