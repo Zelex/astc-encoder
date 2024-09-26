@@ -2235,7 +2235,7 @@ int astcenc_main(
 			{
 				printf("Optimizing for LZ compression\n");
 			}
-			optimize_for_lz(image_comp.data, image_comp.data_len, 16);  // ASTC blocks are typically 16 bytes
+			optimize_for_lz(image_comp.data, image_comp.data_len, image_comp.block_x, image_comp.block_y, image_comp.block_z, image_uncomp_in->data_type);
 		}
 	}
 

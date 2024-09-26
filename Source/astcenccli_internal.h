@@ -427,12 +427,18 @@ int astcenc_main(
  *
  * @param data          The compressed image data.
  * @param data_len      The length of the compressed data.
- * @param block_size    The size of each compressed block (typically 16 bytes for ASTC).
+ * @param block_width    The width of each compressed block.
+ * @param block_height   The height of each compressed block.
+ * @param block_depth    The depth of each compressed block.
+ * @param block_type    The type of each compressed block.
  */
 void optimize_for_lz(
     uint8_t* data,
     size_t data_len,
-    size_t block_size
+    int block_width,
+    int block_height,
+    int block_depth,
+    int block_type
 );
 
 
