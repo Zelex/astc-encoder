@@ -97,6 +97,9 @@ struct cli_config_options
 
 	/** @brief Do a second pass over the data with LZ optimization. */
 	bool lz_optimize;
+
+	/** @brief The rate-distortion trade-off parameter for LZ optimization. */
+	float lz_optimize_rdo;
 };
 
 /**
@@ -438,7 +441,8 @@ void optimize_for_lz(
     int block_width,
     int block_height,
     int block_depth,
-    int block_type
+    int block_type,
+	float lambda
 );
 
 

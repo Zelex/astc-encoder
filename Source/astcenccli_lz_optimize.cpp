@@ -203,8 +203,13 @@ static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
  * @param block_height  The height of each compressed block.
  * @param block_depth   The depth of each compressed block.
  * @param block_type    The type of each compressed block.
+ * @param lambda        The rate-distortion trade-off parameter.
  */
-void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type) {
+void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
+    if (lambda <= 0.0f) {
+        lambda = 0.1f;
+    }
+
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
@@ -216,7 +221,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     const float MAX_MSE_THRESHOLD = 128.0f;
     const float GRADIENT_SCALE = 10.0f;
     const float TEMPERATURE = 0.0f;
-    const float LAMBDA = 0.1f; // Rate-distortion trade-off parameter
+    const float LAMBDA = lambda; // Rate-distortion trade-off parameter
 
     size_t num_blocks = data_len / block_size;
 

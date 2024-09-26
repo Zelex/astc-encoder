@@ -1188,6 +1188,16 @@ static int edit_astcenc_config(
 			argidx++;
 			cli_config.lz_optimize = true;
 		}
+		else if (!strcmp(argv[argidx], "-rdo"))
+		{
+			argidx += 2;
+			if (argidx > argc)
+			{
+				print_error("ERROR: -rdo switch with no argument\n");
+				return 1;
+			}
+			cli_config.lz_optimize_rdo = (float)atof(argv[argidx - 1]);
+		}
 		else // check others as well
 		{
 			print_error("ERROR: Argument '%s' not recognized\n", argv[argidx]);
@@ -2235,7 +2245,7 @@ int astcenc_main(
 			{
 				printf("Optimizing for LZ compression\n");
 			}
-			optimize_for_lz(image_comp.data, image_comp.data_len, image_comp.block_x, image_comp.block_y, image_comp.block_z, image_uncomp_in->data_type);
+			optimize_for_lz(image_comp.data, image_comp.data_len, image_comp.block_x, image_comp.block_y, image_comp.block_z, image_uncomp_in->data_type, cli_config.lz_optimize_rdo);
 		}
 	}
 
