@@ -68,6 +68,13 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
+static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
+    for (int i = 0; i < 8; i++) {
+        uint8_t byte = (value >> (i * 8)) & 0xFF;
+        mtf->literal_histogram[byte]++;
+    }
+}
+
 static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf) {
     if (is_literal) {
         float total_entropy = 0.0f;
@@ -187,13 +194,6 @@ static void astc_decompress_block(
             output_f[i * 4 + 2] = color.lane<2>();
             output_f[i * 4 + 3] = color.lane<3>();
         }
-    }
-}
-
-static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
-    for (int i = 0; i < 8; i++) {
-        uint8_t byte = (value >> (i * 8)) & 0xFF;
-        mtf->literal_histogram[byte]++;
     }
 }
 
