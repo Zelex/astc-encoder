@@ -4,28 +4,13 @@
 #include "astcenccli_internal.h"
 #include "astcenc_internal_entry.h"
 
-// cross platform popcountll
-#if defined(_MSC_VER)
-#include <intrin.h>
-#define popcountll _mm_popcnt_u64
-#else
-#include <x86intrin.h>
-#define popcountll __builtin_popcountll
-#endif
-
 #define MTF_SIZE 1024
-#define LOG2_MTF_SIZE 8
 
 typedef struct {
     long long list[MTF_SIZE];
     int size;
     int literal_histogram[256]; // Single histogram for all bytes
 } MTF_LL;
-
-typedef struct { 
-    long long bits;
-    int count;
-} unique_bits_t;
 
 static inline float log2_fast(float val) {
     union { float val; int x; } u = { val };
@@ -97,33 +82,18 @@ static float calculate_bit_cost(int mtf_value, bool is_literal, long long litera
     }
 }
 
-static int compare_long_long(const void *a, const void *b) {
-    long long l1 = *((long long*)a);
-    long long l2 = *((long long*)b);
-    if (l1 < l2) return -1;
-    if (l1 > l2) return 1;
-    return 0;
-}
-
-// Sort descending based on count
-static int compare_unique_bits(const void *a, const void *b) {
-    unique_bits_t *ub1 = (unique_bits_t*)a;
-    unique_bits_t *ub2 = (unique_bits_t*)b;
-    if (ub1->count < ub2->count) return 1;
-    if (ub1->count > ub2->count) return -1;
-    return 0;
-}
-
-static inline float calculate_mse(const uint8_t* img1, const uint8_t* img2, int total) {
+template<typename T>
+static inline float calculate_mse(const T* img1, const T* img2, int total) {
     float sum = 0.0;
     for (int i = 0; i < total; i++) {
-        int diff = img1[i] - img2[i];
+        float diff = (float)img1[i] - (float)img2[i];
         sum += diff * diff;
     }
-    return (float)sum / total;
+    return sum / total;
 }
 
-static float calculate_gradient_magnitude(const uint8_t* img, int width, int height) {
+template<typename T>
+static float calculate_gradient_magnitude(const T* img, int width, int height) {
     float total_magnitude = 0.0f;
     int channels = 4; // Assuming RGBA
 
@@ -228,8 +198,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     MTF_LL global_mtf;
     mtf_ll_init(&global_mtf);
 
-    uint8_t original_decoded[6 * 6 * 6 * 4] = { 0 };
-    uint8_t modified_decoded[6 * 6 * 6 * 4] = { 0 };
+    uint8_t *original_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
+    uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
 
     // In the original data, now search the MTF list for potential replacements
     for (size_t i = 0; i < num_blocks; i++) {
@@ -246,7 +216,12 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
                                                      masked_current_bits, &global_mtf);
 
         // Calculate gradient magnitude of the original block
-        float gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
+        float gradient_magnitude;
+        if (block_type == ASTCENC_TYPE_U8) {
+            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
+        } else {
+            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height);
+        }
         
         // Adjust MSE_THRESHOLD based on gradient magnitude
         float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
@@ -266,7 +241,12 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
             astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
-            float mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*4);
+            float mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+				mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            } else {
+				mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            }
 
             // Calculate bit cost for the modified block
             float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf);
@@ -295,4 +275,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
     // Clean up
     free(bsd);
+    free(original_decoded);
+    free(modified_decoded);
 }
