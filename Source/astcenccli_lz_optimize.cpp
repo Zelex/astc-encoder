@@ -187,11 +187,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     const int block_size = 16;
     const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFFull;
     const int BITS_OFFSET = 8;
-    const float BASE_MSE_THRESHOLD = 4.0f;
+    const float BASE_MSE_THRESHOLD = 1.0f;
     const float MAX_MSE_THRESHOLD = 128.0f;
-    const float GRADIENT_SCALE = 10.0f;
+    const float GRADIENT_SCALE = 8.5f;
     const float TEMPERATURE = 0.0f;
-    const float LAMBDA = lambda; // Rate-distortion trade-off parameter
 
     size_t num_blocks = data_len / block_size;
 
@@ -252,7 +251,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf);
 
             // Calculate rate-distortion cost
-            float rd_cost = mse + LAMBDA * (modified_bit_cost - original_bit_cost);
+            float rd_cost = mse + lambda * (modified_bit_cost - original_bit_cost);
 
             if (rd_cost < best_rd_cost && mse < adjusted_mse_threshold) {
                 best_match = candidate_bits;
