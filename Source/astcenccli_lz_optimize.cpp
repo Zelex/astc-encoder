@@ -93,7 +93,7 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
 }
 
 template<typename T>
-static float calculate_gradient_magnitude(const T* img, int width, int height) {
+static float calculate_gradient_magnitude_2d(const T* img, int width, int height) {
     float total_magnitude = 0.0f;
     int channels = 4; // Assuming RGBA
 
@@ -110,6 +110,39 @@ static float calculate_gradient_magnitude(const T* img, int width, int height) {
     }
 
     return total_magnitude / (width * height * channels);
+}
+
+template<typename T>
+static float calculate_gradient_magnitude_3d(const T* img, int width, int height, int depth) {
+    float total_magnitude = 0.0f;
+    int channels = 4; // Assuming RGBA
+
+    for (int z = 1; z < depth - 1; z++) {
+        for (int y = 1; y < height - 1; y++) {
+            for (int x = 1; x < width - 1; x++) {
+                for (int c = 0; c < channels; c++) {
+                    float gx = (float)img[(((z * height + y) * width + x + 1) * channels) + c] - 
+                               (float)img[(((z * height + y) * width + x - 1) * channels) + c];
+                    float gy = (float)img[(((z * height + y + 1) * width + x) * channels) + c] - 
+                               (float)img[(((z * height + y - 1) * width + x) * channels) + c];
+                    float gz = (float)img[((((z + 1) * height + y) * width + x) * channels) + c] - 
+                               (float)img[((((z - 1) * height + y) * width + x) * channels) + c];
+                    total_magnitude += sqrtf(gx * gx + gy * gy + gz * gz);
+                }
+            }
+        }
+    }
+
+    return total_magnitude / (width * height * depth * channels);
+}
+
+template<typename T>
+static float calculate_gradient_magnitude(const T* img, int width, int height, int depth) {
+    if (depth == 1) {
+        return calculate_gradient_magnitude_2d(img, width, height);
+    } else {
+        return calculate_gradient_magnitude_3d(img, width, height, depth);
+    }
 }
 
 static void astc_decompress_block(
@@ -217,9 +250,9 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         // Calculate gradient magnitude of the original block
         float gradient_magnitude;
         if (block_type == ASTCENC_TYPE_U8) {
-            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height);
+            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
         } else {
-            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height);
+            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
         }
         
         // Adjust MSE_THRESHOLD based on gradient magnitude
