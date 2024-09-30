@@ -488,7 +488,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
         
         // Adjust lambda based on gradient
-        float adjusted_lambda = lambda * (1.0f + gradient_factor);
+        float adjusted_lambda = lambda * (1.0f + gradient_factor * 1000.f);
 
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -551,156 +551,6 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
     free(modified_decoded);
 }
 
-typedef struct {
-    long long bits;
-    int count;
-} unique_bits_t;
-
-static int compare_long_long(const void* a, const void* b) {
-    long long l1 = *((long long*)a);
-    long long l2 = *((long long*)b);
-    if (l1 < l2) return -1;
-    if (l1 > l2) return 1;
-    return 0;
-}
-
-// Sort descending based on count
-static int compare_unique_bits(const void* a, const void* b) {
-    unique_bits_t* ub1 = (unique_bits_t*)a;
-    unique_bits_t* ub2 = (unique_bits_t*)b;
-    if (ub1->count < ub2->count) return 1;
-    if (ub1->count > ub2->count) return -1;
-    return 0;
-}
-
-static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
-    // Initialize weight bits table -- block size matters in determining that certain ones are errors
-    /*
-    #define NUM_BLOCK_MODES 2048
-    uint8_t *weight_bits = (uint8_t *) malloc(NUM_BLOCK_MODES);
-    for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
-        uint8_t block[16];
-        block[0] = (i & 255);
-        block[1] = ((i>>8) & 255);
-        weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
-    }
-
-    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_t*)block)[0] & 0x7ff]
-    */
-
-    const int block_size = 16;
-
-    // Gather up all the block indices (second 8-bytes). Sort them by frequency.
-    size_t num_blocks = data_len / block_size;
-    long long *bits = new long long[num_blocks];
-    unique_bits_t *unique_bits = new unique_bits_t[num_blocks];
-    size_t num_unique_bits = 0;
-
-    // Count the frequency of each bit pattern
-    for (size_t i = 0; i < num_blocks; i++) { 
-        bits[i] = *((long long*)(data + i * block_size + BITS_OFFSET)) & INDEX_MASK;
-    }
-
-    qsort(bits, num_blocks, sizeof(long long), compare_long_long);
-
-    for (size_t i = 0; i < num_blocks; i++) {
-        if (i > 0 && bits[i] == bits[i - 1]) {
-            unique_bits[num_unique_bits - 1].count++;
-        } else {
-            unique_bits[num_unique_bits].bits = bits[i];
-            unique_bits[num_unique_bits].count = 1;
-            num_unique_bits++;
-        }
-    }
-
-    qsort(unique_bits, num_unique_bits, sizeof(unique_bits_t), compare_unique_bits);
-
-    size_t N = (64 < num_unique_bits) ? 64 : num_unique_bits; 
-
-    uint8_t modified_decoded[6 * 6 * 6 * 4 * 4] = { 0 };  // Increased size to accommodate larger blocks and float data
-
-    // In the original data, now find the bits that most resemble the unique bits in the first N spots, and replace them
-    for (size_t i = 0; i < num_blocks; i++) {
-        uint8_t *current_block = data + i * block_size;
-        long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
-        long long masked_current_bits = current_bits & INDEX_MASK;
-        size_t best_match = masked_current_bits;
-        float best_rd_cost = FLT_MAX;
-
-        // Use the pre-decoded original block
-        uint8_t* original_decoded = all_original_decoded + i * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
-
-        // Calculate gradient magnitude of the original block
-        float gradient_magnitude;
-        float max_possible_gradient;
-        if (block_type == ASTCENC_TYPE_U8) {
-            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
-            max_possible_gradient = 255.0f * sqrtf(3.0f); // Max possible gradient for RGB in 8-bit
-        } else {
-            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
-            max_possible_gradient = 1.0f * sqrtf(3.0f); // Max possible gradient for RGB in float [0,1] range
-        }
-        
-        // Adjust MSE_THRESHOLD and lambda based on gradient magnitude
-        float normalized_gradient = gradient_magnitude / max_possible_gradient;
-        float gradient_scale = BASE_GRADIENT_SCALE * lambda;
-        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale;
-        
-        // Adjust lambda based on gradient
-        float adjusted_lambda = lambda * (1.0f + gradient_factor);
-
-        // Decode the original block to compute initial MSE
-        astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
-        float original_mse;
-        if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-        } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-        }
-
-        float original_bit_cost = calculate_bit_cost(0, false, masked_current_bits, NULL, INDEX_MASK);
-        best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;
-
-        for (size_t j = 0; j < N; j++) {
-            // Create a temporary modified block
-            uint8_t temp_block[16];  // Assuming 16-byte ASTC blocks
-            memcpy(temp_block, current_block, 16);
-            uint64_t *temp_bits = (uint64_t*)(temp_block + BITS_OFFSET);
-            *temp_bits = (*temp_bits & ~INDEX_MASK) | (unique_bits[j].bits & INDEX_MASK);
-
-            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-            float mse;
-            if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-            } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-            }
-
-            // Calculate bit cost for the modified block
-            float modified_bit_cost = calculate_bit_cost((int)j, false, unique_bits[j].bits, NULL, INDEX_MASK);
-
-            // Calculate rate-distortion cost with adjusted lambda and MSE thresholding
-            float rd_cost = mse + adjusted_lambda * modified_bit_cost;
-
-            if (rd_cost < best_rd_cost) {
-                best_match = unique_bits[j].bits;
-                best_rd_cost = rd_cost;
-            }
-        }
-
-        if (best_match != masked_current_bits) {
-            // Replace only the index bits with the best matching frequent pattern
-            long long new_bits = (current_bits & ~INDEX_MASK) | (best_match & INDEX_MASK);
-            *((long long*)(data + i * block_size + BITS_OFFSET)) = new_bits;
-        }
-    }
-
-    // Clean up
-    delete[] bits;
-    delete[] unique_bits;
-}
-
 /**
  * @brief Optimize compressed data for better LZ compression.
  *
@@ -750,18 +600,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     // Third pass, more color endpoints
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
 
-    /*
-    // L0 global solves...
-
-    // Fourth pass, L0 weights (commented out for now)
-    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
-
-    // Fifth pass, L0 color endpoints
-    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
-
-    // Sixth pass, L0 more color endpoints
-    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
-
     // MTF again...
 
     // Seventh pass, L0 weights
@@ -772,7 +610,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
     // Ninth pass, L0 more color endpoints
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
-    */
 
     // Clean up
     free(bsd);
