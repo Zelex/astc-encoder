@@ -7,6 +7,10 @@
 //#define MTF_SIZE 1024
 #define MTF_SIZE (256+64+16+1)
 
+static const float BASE_MSE_THRESHOLD = 1.0f;
+static const float MAX_MSE_THRESHOLD = 128.0f;
+static const float BASE_GRADIENT_SCALE = 50.0f;
+
 typedef struct {
     long long list[MTF_SIZE];
     int size;
@@ -396,42 +400,26 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
-static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK) {
-    // Initialize block_size_descriptor once
-    block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
-    init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
-
-    // Initialize weight bits table -- block size matters in determining that certain ones are errors
-    /*
-    #define NUM_BLOCK_MODES 2048
-    uint8_t *weight_bits = (uint8_t *) malloc(NUM_BLOCK_MODES);
-    for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
-        uint8_t block[16];
-        block[0] = (i & 255);
-        block[1] = ((i>>8) & 255);
-        weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
-    }
-
-    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_t*)block)[0] & 0x7ff]
-    */
+static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
+    // Remove the following lines as we no longer need to allocate these buffers
+    // uint8_t *original_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
+    uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
 
     const int block_size = 16;
 
-    const float BASE_MSE_THRESHOLD = 1.0f;
-    const float MAX_MSE_THRESHOLD = 128.0f;
-    const float GRADIENT_SCALE = 8.5f;
-    const float TEMPERATURE = 0.0f;
 
     size_t num_blocks = data_len / block_size;
 
     MTF_LL global_mtf;
     mtf_ll_init(&global_mtf);
 
-    uint8_t *original_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
-    uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
-
     // In the original data, now search the MTF list for potential replacements
     for (size_t i = 0; i < num_blocks; i++) {
+        // Reset the MTF every 8k blocks
+        if (i % 8192 == 0 && i > 0) {
+            mtf_ll_init(&global_mtf);
+        }
+
         uint8_t *current_block = data + i * block_size;
         long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
 		//const long long INDEX_MASK = 0xFFFFFFFFFFFF0000ull;
@@ -439,7 +427,8 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         size_t best_match = current_bits;
         float best_rd_cost = FLT_MAX;
 
-        astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
+        // Use the pre-decoded original block
+        uint8_t* original_decoded = all_original_decoded + i * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
         float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, current_bits, INDEX_MASK), 
                                                      !mtf_ll_contains(&global_mtf, current_bits, INDEX_MASK),
@@ -454,9 +443,10 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
             gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
         }
         
-        // Adjust MSE_THRESHOLD based on gradient magnitude
+        // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
         float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
-        float gradient_factor = expf(GRADIENT_SCALE * normalized_gradient) - 1.0f;
+        float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
+        float gradient_factor = expf(gradient_scale * normalized_gradient) - 1.0f;
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
 
@@ -501,14 +491,142 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         mtf_ll_encode(&global_mtf, best_match, INDEX_MASK);
 
         // Update the literal histogram with the chosen bits
-        mtf_ll_update_histogram(&global_mtf, best_match);
+        if (!mtf_ll_contains(&global_mtf, best_match, INDEX_MASK)) {
+            mtf_ll_update_histogram(&global_mtf, best_match);
+        }
     }
 
     // Clean up
-    //free(weight_bits);
-    free(bsd);
-    free(original_decoded);
     free(modified_decoded);
+}
+
+typedef struct {
+    long long bits;
+    int count;
+} unique_bits_t;
+
+static int compare_long_long(const void* a, const void* b) {
+    long long l1 = *((long long*)a);
+    long long l2 = *((long long*)b);
+    if (l1 < l2) return -1;
+    if (l1 > l2) return 1;
+    return 0;
+}
+
+// Sort descending based on count
+static int compare_unique_bits(const void* a, const void* b) {
+    unique_bits_t* ub1 = (unique_bits_t*)a;
+    unique_bits_t* ub2 = (unique_bits_t*)b;
+    if (ub1->count < ub2->count) return 1;
+    if (ub1->count > ub2->count) return -1;
+    return 0;
+}
+
+static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
+    // Initialize weight bits table -- block size matters in determining that certain ones are errors
+    /*
+    #define NUM_BLOCK_MODES 2048
+    uint8_t *weight_bits = (uint8_t *) malloc(NUM_BLOCK_MODES);
+    for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
+        uint8_t block[16];
+        block[0] = (i & 255);
+        block[1] = ((i>>8) & 255);
+        weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
+    }
+
+    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_t*)block)[0] & 0x7ff]
+    */
+
+    const int block_size = 16;
+
+    // Gather up all the block indices (second 8-bytes). Sort them by frequency.
+    size_t num_blocks = data_len / block_size;
+    long long *bits = new long long[num_blocks];
+    unique_bits_t *unique_bits = new unique_bits_t[num_blocks];
+    size_t num_unique_bits = 0;
+
+    // Count the frequency of each bit pattern
+    for (size_t i = 0; i < num_blocks; i++) { 
+        bits[i] = *((long long*)(data + i * block_size + BITS_OFFSET)) & INDEX_MASK;
+    }
+
+    qsort(bits, num_blocks, sizeof(long long), compare_long_long);
+
+    for (size_t i = 0; i < num_blocks; i++) {
+        if (i > 0 && bits[i] == bits[i - 1]) {
+            unique_bits[num_unique_bits - 1].count++;
+        } else {
+            unique_bits[num_unique_bits].bits = bits[i];
+            unique_bits[num_unique_bits].count = 1;
+            num_unique_bits++;
+        }
+    }
+
+    qsort(unique_bits, num_unique_bits, sizeof(unique_bits_t), compare_unique_bits);
+
+    size_t N = (64 < num_unique_bits) ? 64 : num_unique_bits; 
+
+    uint8_t modified_decoded[6 * 6 * 6 * 4 * 4] = { 0 };  // Increased size to accommodate larger blocks and float data
+
+    // In the original data, now find the bits that most resemble the unique bits in the first N spots, and replace them
+    for (size_t i = 0; i < num_blocks; i++) {
+        uint8_t *current_block = data + i * block_size;
+        long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
+        long long masked_current_bits = current_bits & INDEX_MASK;
+        size_t best_match = masked_current_bits;
+        float best_mse = FLT_MAX;
+
+        // Use the pre-decoded original block
+        uint8_t* original_decoded = all_original_decoded + i * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+
+        // Calculate gradient magnitude of the original block
+        float gradient_magnitude;
+        if (block_type == ASTCENC_TYPE_U8) {
+            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
+        } else {
+            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
+        }
+        
+        // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
+        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
+        float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
+        float gradient_factor = expf(gradient_scale * normalized_gradient) - 1.0f;
+        float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
+        adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
+
+        for (size_t j = 0; j < N; j++) {
+            // Create a temporary modified block
+            uint8_t temp_block[16];  // Assuming 16-byte ASTC blocks
+            memcpy(temp_block, current_block, 16);
+            uint64_t *temp_bits = (uint64_t*)(temp_block + BITS_OFFSET);
+            *temp_bits = (*temp_bits & ~INDEX_MASK) | (unique_bits[j].bits & INDEX_MASK);
+
+            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+            float mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+                mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            } else {
+                mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            }
+
+            // Remove the temperature-based adjustment as it's not being used effectively
+            if (mse < best_mse && mse < adjusted_mse_threshold) {
+                best_match = unique_bits[j].bits;
+                best_mse = mse;
+            }
+        }
+
+        if (best_match != masked_current_bits) {
+            // Replace only the index bits with the best matching frequent pattern
+            long long new_bits = (current_bits & ~INDEX_MASK) | (best_match & INDEX_MASK);
+            *((long long*)(data + i * block_size + BITS_OFFSET)) = new_bits;
+        }
+    }
+
+    // Clean up
+    delete[] bits;
+    delete[] unique_bits;
 }
 
 /**
@@ -527,12 +645,62 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         lambda = 0.1f;
     }
 
+    // Create a copy of the original data to decode for later passes
+    uint8_t *original_data = (uint8_t*)malloc(data_len);
+    memcpy(original_data, data, data_len);
+
+    // Initialize block_size_descriptor once
+    block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
+    init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
+
+    // Decode all original blocks once
+    const int block_size = 16;
+    size_t num_blocks = data_len / block_size;
+    size_t decoded_block_size = block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
+    uint8_t *all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
+
+    for (size_t i = 0; i < num_blocks; i++) {
+        uint8_t *original_block = original_data + i * block_size;
+        uint8_t *decoded_block = all_original_decoded + i * decoded_block_size;
+        astc_decompress_block(*bsd, original_block, decoded_block, block_width, block_height, block_depth, block_type);
+    }
+
+    free(original_data);
+
+    // MTF passes...
+
     // First pass, weights
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
 
     // Second pass, color endpoints
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
 
     // Third pass, more color endpoints
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+
+    // L0 global solves...
+
+    // Fourth pass, L0 weights (commented out for now)
+    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
+
+    // Fifth pass, L0 color endpoints
+    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+
+    // Sixth pass, L0 more color endpoints
+    l0_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+
+    // MTF again...
+
+    // Seventh pass, L0 weights
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
+
+    // Eighth pass, L0 color endpoints
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+
+    // Ninth pass, L0 more color endpoints
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+
+    // Clean up
+    free(bsd);
+    free(all_original_decoded);
 }
