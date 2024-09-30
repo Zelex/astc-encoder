@@ -9,7 +9,7 @@
 
 static const float BASE_MSE_THRESHOLD = 1.0f;
 static const float MAX_MSE_THRESHOLD = 128.0f;
-static const float BASE_GRADIENT_SCALE = 75.0f;
+static const float BASE_GRADIENT_SCALE = 15.0f;
 static const float GRADIENT_POW = 1.1f;
 
 typedef struct {
@@ -119,12 +119,12 @@ static float calculate_gradient_magnitude_2d(const T* img, int width, int height
                            (float)img[((y * width + x - 1) * channels) + c];
                 float gy = (float)img[(((y + 1) * width + x) * channels) + c] - 
                            (float)img[(((y - 1) * width + x) * channels) + c];
-                total_magnitude += sqrtf(gx * gx + gy * gy);
+                total_magnitude += gx * gx + gy * gy;
             }
         }
     }
 
-    return total_magnitude / (width * height * channels);
+    return sqrtf(total_magnitude / ((width-2) * (height-2) * channels));
 }
 
 template<typename T>
@@ -142,13 +142,15 @@ static float calculate_gradient_magnitude_3d(const T* img, int width, int height
                                (float)img[(((z * height + y - 1) * width + x) * channels) + c];
                     float gz = (float)img[((((z + 1) * height + y) * width + x) * channels) + c] - 
                                (float)img[((((z - 1) * height + y) * width + x) * channels) + c];
-                    total_magnitude += sqrtf(gx * gx + gy * gy + gz * gz);
+                    //total_magnitude += sqrtf(gx * gx + gy * gy + gz * gz);
+                    total_magnitude += gx * gx + gy * gy + gz * gz;
                 }
             }
         }
     }
 
-    return total_magnitude / (width * height * depth * channels);
+    //return total_magnitude / (width * height * depth * channels);
+    return sqrtf(total_magnitude / ((width-2) * (height-2) * (depth-2) * channels));
 }
 
 template<typename T>
