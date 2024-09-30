@@ -7,14 +7,12 @@
 //#define MTF_SIZE 1024
 #define MTF_SIZE (256+64+16+1)
 
-static const float BASE_MSE_THRESHOLD = 1.0f;
-static const float MAX_MSE_THRESHOLD = 128.0f;
 static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 1.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
-static const float SUBTLE_GRADIENT_THRESHOLD = 0.1f;
-static const float SUBTLE_GRADIENT_REDUCTION = 0.01f;
+
+#define ERROR_FN calculate_mse
 
 typedef struct {
     long long list[MTF_SIZE];
@@ -107,6 +105,17 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
         sum += diff * diff;
+    }
+    return sum / total;
+}
+
+// Calculate Sum of Absolute Differences Error
+template<typename T>
+static inline float calculate_sad(const T* img1, const T* img2, int total) {
+    float sum = 0.0;
+    for (int i = 0; i < total; i++) {
+        float diff = (float)img1[i] - (float)img2[i];
+        sum += diff < 0 ? -diff : diff;
     }
     return sum / total;
 }
@@ -477,32 +486,17 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         float normalized_gradient = gradient_magnitude / max_possible_gradient;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
-        float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
-        adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
         
         // Adjust lambda based on gradient
         float adjusted_lambda = lambda * (1.0f + gradient_factor);
-
-        // Reduce lambda for subtle gradients
-        if (normalized_gradient < SUBTLE_GRADIENT_THRESHOLD) {
-            adjusted_lambda *= SUBTLE_GRADIENT_REDUCTION;
-            //adjusted_mse_threshold *= SUBTLE_GRADIENT_REDUCTION;
-        }
-        /*
-        printf("Gradient magnitude: %f\n", gradient_magnitude);
-        printf("Max possible gradient: %f\n", max_possible_gradient);
-        printf("Normalized gradient: %f\n", normalized_gradient);
-        printf("Original lambda: %f\n", lambda);
-        printf("Adjusted lambda: %f\n", adjusted_lambda);
-        */
 
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
         } else {
-            original_mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
         }
 
         best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;        
@@ -521,16 +515,16 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
             float mse;
             if (block_type == ASTCENC_TYPE_U8) {
-				mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+				mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
             } else {
-				mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+				mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
             // Calculate bit cost for the modified block
             float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf, INDEX_MASK);
 
             // Calculate rate-distortion cost with adjusted lambda and MSE thresholding
-            float rd_cost = (mse < adjusted_mse_threshold) ? (mse + adjusted_lambda * modified_bit_cost) : FLT_MAX;
+            float rd_cost = mse + adjusted_lambda * modified_bit_cost;
 
             if (rd_cost < best_rd_cost) {
                 best_match = candidate_bits;
@@ -651,24 +645,17 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
         float normalized_gradient = gradient_magnitude / max_possible_gradient;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda;
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale;
-        float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
-        adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
         
         // Adjust lambda based on gradient
         float adjusted_lambda = lambda * (1.0f + gradient_factor);
-
-        // Reduce lambda for subtle gradients
-        if (normalized_gradient < SUBTLE_GRADIENT_THRESHOLD) {
-            adjusted_lambda *= SUBTLE_GRADIENT_REDUCTION;
-        }
 
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
         } else {
-            original_mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
         }
 
         float original_bit_cost = calculate_bit_cost(0, false, masked_current_bits, NULL, INDEX_MASK);
@@ -685,16 +672,16 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
 
             float mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
             } else {
-                mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
             // Calculate bit cost for the modified block
             float modified_bit_cost = calculate_bit_cost((int)j, false, unique_bits[j].bits, NULL, INDEX_MASK);
 
             // Calculate rate-distortion cost with adjusted lambda and MSE thresholding
-            float rd_cost = (mse < adjusted_mse_threshold) ? (mse + adjusted_lambda * modified_bit_cost) : FLT_MAX;
+            float rd_cost = mse + adjusted_lambda * modified_bit_cost;
 
             if (rd_cost < best_rd_cost) {
                 best_match = unique_bits[j].bits;
@@ -727,7 +714,7 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.4f;
+        lambda = 0.003f;
     }
 
     // Create a copy of the original data to decode for later passes
