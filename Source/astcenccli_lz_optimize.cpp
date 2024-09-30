@@ -9,7 +9,8 @@
 
 static const float BASE_MSE_THRESHOLD = 1.0f;
 static const float MAX_MSE_THRESHOLD = 128.0f;
-static const float BASE_GRADIENT_SCALE = 50.0f;
+static const float BASE_GRADIENT_SCALE = 100.0f;
+static const float GRADIENT_POW = 1.1f;
 
 typedef struct {
     long long list[MTF_SIZE];
@@ -446,7 +447,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
         float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
-        float gradient_factor = expf(gradient_scale * normalized_gradient) - 1.0f;
+        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
 
@@ -590,7 +591,7 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
         // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
         float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
-        float gradient_factor = expf(gradient_scale * normalized_gradient) - 1.0f;
+        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
 
