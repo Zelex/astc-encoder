@@ -9,8 +9,10 @@
 
 static const float BASE_MSE_THRESHOLD = 1.0f;
 static const float MAX_MSE_THRESHOLD = 128.0f;
-static const float BASE_GRADIENT_SCALE = 15.0f;
-static const float GRADIENT_POW = 1.1f;
+static const float BASE_GRADIENT_SCALE = 10.0f;
+static const float GRADIENT_POW = 1.0f;
+static const float EDGE_WEIGHT = 2.0f;
+static const float CORNER_WEIGHT = 1.0f;
 
 typedef struct {
     long long list[MTF_SIZE];
@@ -108,57 +110,77 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
 }
 
 template<typename T>
-static float calculate_gradient_magnitude_2d(const T* img, int width, int height) {
+static float calculate_gradient_magnitude_2d(const T* img, int width, int height, int channels) {
     float total_magnitude = 0.0f;
-    int channels = 4; // Assuming RGBA
 
-    for (int y = 1; y < height - 1; y++) {
-        for (int x = 1; x < width - 1; x++) {
-            for (int c = 0; c < channels; c++) {
-                float gx = (float)img[((y * width + x + 1) * channels) + c] - 
-                           (float)img[((y * width + x - 1) * channels) + c];
-                float gy = (float)img[(((y + 1) * width + x) * channels) + c] - 
-                           (float)img[(((y - 1) * width + x) * channels) + c];
-                total_magnitude += gx * gx + gy * gy;
+    for (int c = 0; c < channels; c++) {
+        // Horizontal gradients
+        for (int y = 0; y < height; y++) {
+            float gx = (float)img[(y * width + 3) * channels + c] - (float)img[(y * width) * channels + c];
+            total_magnitude += gx * gx * EDGE_WEIGHT;
+            
+            for (int x = 1; x < width - 1; x++) {
+                gx = (float)img[(y * width + x + 1) * channels + c] - (float)img[(y * width + x - 1) * channels + c];
+                total_magnitude += gx * gx;
             }
         }
+
+        // Vertical gradients
+        for (int x = 0; x < width; x++) {
+            float gy = (float)img[((height - 1) * width + x) * channels + c] - (float)img[x * channels + c];
+            total_magnitude += gy * gy * EDGE_WEIGHT;
+            
+            for (int y = 1; y < height - 1; y++) {
+                gy = (float)img[((y + 1) * width + x) * channels + c] - (float)img[((y - 1) * width + x) * channels + c];
+                total_magnitude += gy * gy;
+            }
+        }
+
+        // Diagonal gradients (for corners)
+        float gd1 = (float)img[((height - 1) * width + width - 1) * channels + c] - (float)img[0];
+        float gd2 = (float)img[((height - 1) * width) * channels + c] - (float)img[width - 1];
+        total_magnitude += (gd1 * gd1 + gd2 * gd2) * CORNER_WEIGHT;
     }
 
-    return sqrtf(total_magnitude / ((width-2) * (height-2) * channels));
+    return sqrtf(total_magnitude) / (width * height * channels);
 }
 
 template<typename T>
-static float calculate_gradient_magnitude_3d(const T* img, int width, int height, int depth) {
+static float calculate_gradient_magnitude_3d(const T* img, int width, int height, int depth, int channels) {
     float total_magnitude = 0.0f;
-    int channels = 4; // Assuming RGBA
 
-    for (int z = 1; z < depth - 1; z++) {
-        for (int y = 1; y < height - 1; y++) {
-            for (int x = 1; x < width - 1; x++) {
-                for (int c = 0; c < channels; c++) {
-                    float gx = (float)img[(((z * height + y) * width + x + 1) * channels) + c] - 
-                               (float)img[(((z * height + y) * width + x - 1) * channels) + c];
-                    float gy = (float)img[(((z * height + y + 1) * width + x) * channels) + c] - 
-                               (float)img[(((z * height + y - 1) * width + x) * channels) + c];
-                    float gz = (float)img[((((z + 1) * height + y) * width + x) * channels) + c] - 
-                               (float)img[((((z - 1) * height + y) * width + x) * channels) + c];
-                    //total_magnitude += sqrtf(gx * gx + gy * gy + gz * gz);
-                    total_magnitude += gx * gx + gy * gy + gz * gz;
+    for (int c = 0; c < channels; c++) {
+        for (int z = 0; z < depth; z++) {
+            // XY plane gradients
+            total_magnitude += calculate_gradient_magnitude_2d(img + z * width * height * channels, width, height, channels);
+        }
+
+        // Z-direction gradients
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float gz = (float)img[((depth - 1) * height * width + y * width + x) * channels + c] - 
+                           (float)img[(y * width + x) * channels + c];
+                total_magnitude += gz * gz * EDGE_WEIGHT;
+
+                for (int z = 1; z < depth - 1; z++) {
+                    gz = (float)img[(((z + 1) * height * width + y * width + x) * channels) + c] - 
+                         (float)img[(((z - 1) * height * width + y * width + x) * channels) + c];
+                    total_magnitude += gz * gz;
                 }
             }
         }
     }
 
-    //return total_magnitude / (width * height * depth * channels);
-    return sqrtf(total_magnitude / ((width-2) * (height-2) * (depth-2) * channels));
+    return sqrtf(total_magnitude) / (width * height * depth * channels);
 }
 
 template<typename T>
 static float calculate_gradient_magnitude(const T* img, int width, int height, int depth) {
+    int channels = 4; // Assuming RGBA
     if (depth == 1) {
-        return calculate_gradient_magnitude_2d(img, width, height);
+        return calculate_gradient_magnitude_2d(img, width, height, channels);
     } else {
-        return calculate_gradient_magnitude_3d(img, width, height, depth);
+        return calculate_gradient_magnitude_3d(img, width, height, depth, channels);
     }
 }
 
@@ -447,7 +469,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         }
         
         // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
-        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
+        float normalized_gradient = gradient_magnitude / 255.0f;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
@@ -591,9 +613,9 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
         }
         
         // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
-        float normalized_gradient = fminf(gradient_magnitude / 255.0f, 1.0f);
-        float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
-        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
+        float normalized_gradient = gradient_magnitude / 255.0f;
+        float gradient_scale = BASE_GRADIENT_SCALE * lambda;
+        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale;
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
 
