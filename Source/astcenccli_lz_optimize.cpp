@@ -4,7 +4,8 @@
 #include "astcenccli_internal.h"
 #include "astcenc_internal_entry.h"
 
-#define MTF_SIZE 1024
+//#define MTF_SIZE 1024
+#define MTF_SIZE (256+64+16+1)
 
 typedef struct {
     long long list[MTF_SIZE];
@@ -27,17 +28,18 @@ static void mtf_ll_init(MTF_LL* mtf) {
 }
 
 // Search for a value in the MTF list
-static int mtf_ll_search(MTF_LL* mtf, long long value) {
+static int mtf_ll_search(MTF_LL* mtf, long long value, long long mask) {
+    value &= mask;
     for (int i = 0; i < mtf->size; i++) {
-        if (mtf->list[i] == value) {
+        if ((mtf->list[i] & mask) == value) {
             return i;
         }
     }
     return -1;
 }
 
-static int mtf_ll_encode(MTF_LL* mtf, long long value) {
-    int pos = mtf_ll_search(mtf, value);
+static int mtf_ll_encode(MTF_LL* mtf, long long value, long long mask) {
+    int pos = mtf_ll_search(mtf, value, mask);
     
     if (pos == -1) {
         // Value not found, add it to the front
@@ -56,12 +58,12 @@ static int mtf_ll_encode(MTF_LL* mtf, long long value) {
     return pos;
 }
 
-static bool mtf_ll_contains(MTF_LL* mtf, long long value) {
-    return mtf_ll_search(mtf, value) != -1;
+static bool mtf_ll_contains(MTF_LL* mtf, long long value, long long mask) {
+    return mtf_ll_search(mtf, value, mask) != -1;
 }
 
-static int mtf_ll_peek_position(MTF_LL* mtf, long long value) {
-    int pos = mtf_ll_search(mtf, value);
+static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
+    int pos = mtf_ll_search(mtf, value, mask);
     if (pos != -1) {
         return pos;
     }
@@ -75,7 +77,8 @@ static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
     }
 }
 
-static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf) {
+static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
+    literal_value &= mask;
     if (is_literal) {
         float total_entropy = 0.0f;
         for (int i = 0; i < 8; i++) {
@@ -393,27 +396,13 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
-/**
- * @brief Optimize compressed data for better LZ compression.
- *
- * @param data          The compressed image data.
- * @param data_len      The length of the compressed data.
- * @param block_width   The width of each compressed block.
- * @param block_height  The height of each compressed block.
- * @param block_depth   The depth of each compressed block.
- * @param block_type    The type of each compressed block.
- * @param lambda        The rate-distortion trade-off parameter.
- */
-void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
-    if (lambda <= 0.0f) {
-        lambda = 0.1f;
-    }
-
+static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK) {
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
 
     // Initialize weight bits table -- block size matters in determining that certain ones are errors
+    /*
     #define NUM_BLOCK_MODES 2048
     uint8_t *weight_bits = (uint8_t *) malloc(NUM_BLOCK_MODES);
     for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
@@ -423,11 +412,11 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
     }
 
-    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_i) block)[0] & 0x7ff]
+    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_t*)block)[0] & 0x7ff]
+    */
 
     const int block_size = 16;
-    const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFFull;
-    const int BITS_OFFSET = 8;
+
     const float BASE_MSE_THRESHOLD = 1.0f;
     const float MAX_MSE_THRESHOLD = 128.0f;
     const float GRADIENT_SCALE = 8.5f;
@@ -445,15 +434,17 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     for (size_t i = 0; i < num_blocks; i++) {
         uint8_t *current_block = data + i * block_size;
         long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
-        long long masked_current_bits = current_bits & INDEX_MASK;
-        size_t best_match = masked_current_bits;
+		//const long long INDEX_MASK = 0xFFFFFFFFFFFF0000ull;
+        //const unsigned long long INDEX_MASK = (1ull<<GET_WEIGHT_BITS(current_block))-1;
+        size_t best_match = current_bits;
         float best_rd_cost = FLT_MAX;
 
         astc_decompress_block(*bsd, current_block, original_decoded, block_width, block_height, block_depth, block_type);
 
-        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, masked_current_bits), 
-                                                     !mtf_ll_contains(&global_mtf, masked_current_bits),
-                                                     masked_current_bits, &global_mtf);
+        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&global_mtf, current_bits, INDEX_MASK), 
+                                                     !mtf_ll_contains(&global_mtf, current_bits, INDEX_MASK),
+                                                     current_bits, &global_mtf, INDEX_MASK);
+
 
         // Calculate gradient magnitude of the original block
         float gradient_magnitude;
@@ -489,7 +480,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             }
 
             // Calculate bit cost for the modified block
-            float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf);
+            float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf, INDEX_MASK);
 
             // Calculate rate-distortion cost
             float rd_cost = mse + lambda * (modified_bit_cost - original_bit_cost);
@@ -500,22 +491,48 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
             }
         }
 
-        if (best_match != masked_current_bits) {
+        if (best_match != current_bits) {
             // Replace only the index bits with the best matching pattern from MTF
             long long new_bits = (current_bits & ~INDEX_MASK) | (best_match & INDEX_MASK);
             *((long long*)(data + i * block_size + BITS_OFFSET)) = new_bits;
         }
 
         // Update the global MTF with the chosen bits
-        mtf_ll_encode(&global_mtf, best_match & INDEX_MASK);
+        mtf_ll_encode(&global_mtf, best_match, INDEX_MASK);
 
         // Update the literal histogram with the chosen bits
-        mtf_ll_update_histogram(&global_mtf, best_match & INDEX_MASK);
+        mtf_ll_update_histogram(&global_mtf, best_match);
     }
 
     // Clean up
-    free(weight_bits);
+    //free(weight_bits);
     free(bsd);
     free(original_decoded);
     free(modified_decoded);
+}
+
+/**
+ * @brief Optimize compressed data for better LZ compression.
+ *
+ * @param data          The compressed image data.
+ * @param data_len      The length of the compressed data.
+ * @param block_width   The width of each compressed block.
+ * @param block_height  The height of each compressed block.
+ * @param block_depth   The depth of each compressed block.
+ * @param block_type    The type of each compressed block.
+ * @param lambda        The rate-distortion trade-off parameter.
+ */
+void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
+    if (lambda <= 0.0f) {
+        lambda = 0.1f;
+    }
+
+    // First pass, weights
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull);
+
+    // Second pass, color endpoints
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull);
+
+    // Third pass, more color endpoints
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull);
 }
