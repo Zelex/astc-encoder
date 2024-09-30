@@ -197,6 +197,202 @@ static void astc_decompress_block(
     }
 }
 
+int get_weight_bits(uint8_t *data, int block_width, int block_height, int block_depth)
+{
+    uint16_t mode = data[0] | (data[1]<<8);
+
+    if ((mode & 0x1ff) == 0x1fc)
+        return 0; // void-extent
+    if ((mode & 0x00f) == 0    )
+        return 0; // Reserved
+
+    uint8_t b01 = (mode >>  0) & 3;
+    uint8_t b23 = (mode >>  2) & 3;
+    uint8_t p0  = (mode >>  4) & 1;
+    uint8_t b56 = (mode >>  5) & 3;
+    uint8_t b78 = (mode >>  7) & 3;
+    uint8_t P   = (mode >>  9) & 1;
+    uint8_t Dp  = (mode >> 10) & 1;
+    uint8_t b9_10 = (mode >> 9) & 3;
+    uint8_t p12;
+
+    int W,H,D;
+    if (block_depth <= 1) {
+        // 2D
+        D = 1;
+        if ((mode & 0x1c3) == 0x1c3)
+            return 0; // Reserved*
+        if (b01 == 0) {
+            p12 = b23;
+            switch (b78) {
+                case 0:
+                    W = 12;
+                    H =  2 + b56;
+                    break;
+                case 1:
+                    W =  2 + b56;
+                    H = 12;
+                    break;
+                case 2:
+                    W = 6 + b56;
+                    H = 6 + b9_10;
+                    Dp = 0;
+                    P = 0;
+                    break;
+                case 3:
+                    if (b56 == 0) {
+                        W = 6;
+                        H = 10;
+                    } else if (b56 == 1) {
+                        W = 10;
+                        H = 6;
+                    } else {
+                        /* NOTREACHED */
+                        assert(0);
+                        return 0;
+                    }
+                    break;
+            }
+        } else {
+            p12 = b01;
+            switch (b23) {
+                case 0:
+                    W = 4 + b78;
+                    H = 2 + b56;
+                    break;
+                case 1:
+                    W = 8 + b78;
+                    H = 2 + b56;
+                    break;
+                case 2:
+                    W = 2 + b56;
+                    H = 8 + b78;
+                    break;
+                case 3:
+                    if (b78 & 2) {
+                        W = 2 + (b78 & 1);
+                        H = 6 + b56      ;
+                    } else {
+                        W = 2 + b56      ;
+                        H = 2 + (b78 & 1);
+                    }
+                    break;
+            }
+        }
+    } else {
+        // 3D
+        if ((mode & 0x1e3) == 0x1e3)
+            return 0; // Reserved*
+        if (b01 != 0) {
+            p12 = b01;
+            W = 2 + b56;
+            H = 2 + b78;
+            D = 2 + b23;
+        } else {
+            p12 = b23;
+            switch (b78) {
+                case 0:
+                    W = 6;
+                    H = 2 + b9_10;
+                    D = 2 + b56;
+                    break;
+                case 1:
+                    W = 2 + b56;
+                    H = 6;
+                    D = 2 + b9_10;
+                    break;
+                case 2:
+                    W = 2 + b56;
+                    H = 2 + b9_10;
+                    D = 6;
+                    break;
+                case 3:
+                    switch (b56) {
+                        case 0:
+                            W = 6;
+                            H = 2;
+                            D = 2;
+                            break;
+                        case 1:
+                            W = 2;
+                            H = 6;
+                            D = 2;
+                            break;
+                        case 2:
+                            W = 2;
+                            H = 2;
+                            D = 6;
+                            break;
+                        case 3:
+                            /* NOTREACHED*/
+                            assert(0);
+                            return 0;
+                    }
+                    break;
+            }
+        }
+    }
+    // error cases
+    if (W > block_width ) return 0;
+    if (H > block_height) return 0;
+    if (D > block_depth ) return 0;
+
+    uint8_t p = (p12 << 1) | p0;
+    int trits=0,quints=0,bits=0;
+    if (!P) {
+        int t[8] = { -1,-1, 0,1,0,0,1,0 };
+        int q[8] = { -1,-1, 0,0,0,1,0,0 };
+        int b[8] = { -1,-1, 1,0,2,0,1,3 };
+        trits  = t[p];
+        quints = q[p];
+        bits   = b[p];
+    } else {
+        int t[8] = { -1,-1, 0,1,0,0,1,0 };
+        int q[8] = { -1,-1, 1,0,0,1,0,0 };
+        int b[8] = { -1,-1, 1,2,4,2,3,5 };
+        trits  = t[p];
+        quints = q[p];
+        bits   = b[p];
+    }
+
+    int num_weights = W * H * D;
+    if (Dp)
+        num_weights *= 2;
+
+    if (num_weights > 64)
+        return 0;
+
+    int weight_bits =   (num_weights * 8 * trits  + 4)/5
+                      + (num_weights * 7 * quints + 2)/3
+                      + num_weights * bits;
+
+    // error cases
+    if (weight_bits < 24 || weight_bits > 96)
+        return 0;
+
+    return (uint8_t) weight_bits;
+}
+
+#if 0
+extern int hack_bits_for_weights;
+void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth)
+{
+    block_size_descriptor *bsd = (block_size_descriptor*) malloc(sizeof(*bsd));
+    init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
+
+    for (size_t i=0; i < data_len; i += 16) {
+        uint8_t *block = data + i;
+        uint8_t decoded[6*6*6*4];
+        astc_decompress_block(*bsd, block, decoded, block_width, block_height, block_depth, ASTCENC_TYPE_U8);
+        int bits = get_weight_bits(block, block_width, block_height, block_depth);
+	    if (bits != hack_bits_for_weights) {
+		    printf("Internal error: decoded weight bits count didn't match\n");
+	    }
+    }
+    free(bsd);
+}
+#endif
+
 /**
  * @brief Optimize compressed data for better LZ compression.
  *
@@ -216,6 +412,18 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
+
+    // Initialize weight bits table -- block size matters in determining that certain ones are errors
+    #define NUM_BLOCK_MODES 2048
+    uint8_t *weight_bits = (uint8_t *) malloc(NUM_BLOCK_MODES);
+    for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
+        uint8_t block[16];
+        block[0] = (i & 255);
+        block[1] = ((i>>8) & 255);
+        weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
+    }
+
+    #define GET_WEIGHT_BITS(block)  weight_bits[((uint16_i) block)[0] & 0x7ff]
 
     const int block_size = 16;
     const long long INDEX_MASK = 0xFFFFFFFFFFFFFFFFull;
@@ -306,6 +514,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     }
 
     // Clean up
+    free(weight_bits);
     free(bsd);
     free(original_decoded);
     free(modified_decoded);
