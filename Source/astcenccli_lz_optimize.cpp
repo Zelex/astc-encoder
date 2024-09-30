@@ -13,6 +13,8 @@ static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 1.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
+static const float SUBTLE_GRADIENT_THRESHOLD = 0.1f;
+static const float SUBTLE_GRADIENT_REDUCTION = 0.01f;
 
 typedef struct {
     long long list[MTF_SIZE];
@@ -462,18 +464,48 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
         // Calculate gradient magnitude of the original block
         float gradient_magnitude;
+        float max_possible_gradient;
         if (block_type == ASTCENC_TYPE_U8) {
             gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
+            max_possible_gradient = 255.0f * sqrtf(3.0f); // Max possible gradient for RGB in 8-bit
         } else {
             gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
+            max_possible_gradient = 1.0f * sqrtf(3.0f); // Max possible gradient for RGB in float [0,1] range
         }
         
-        // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
-        float normalized_gradient = gradient_magnitude / 255.0f;
-        float gradient_scale = BASE_GRADIENT_SCALE * lambda; // Direct relationship with lambda
+        // Adjust MSE_THRESHOLD and lambda based on gradient magnitude
+        float normalized_gradient = gradient_magnitude / max_possible_gradient;
+        float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
+        
+        // Adjust lambda based on gradient
+        float adjusted_lambda = lambda * (1.0f + gradient_factor);
+
+        // Reduce lambda for subtle gradients
+        if (normalized_gradient < SUBTLE_GRADIENT_THRESHOLD) {
+            adjusted_lambda *= SUBTLE_GRADIENT_REDUCTION;
+            //adjusted_mse_threshold *= SUBTLE_GRADIENT_REDUCTION;
+        }
+        /*
+        printf("Gradient magnitude: %f\n", gradient_magnitude);
+        printf("Max possible gradient: %f\n", max_possible_gradient);
+        printf("Normalized gradient: %f\n", normalized_gradient);
+        printf("Original lambda: %f\n", lambda);
+        printf("Adjusted lambda: %f\n", adjusted_lambda);
+        */
+
+        // Decode the original block to compute initial MSE
+        astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
+        float original_mse;
+        if (block_type == ASTCENC_TYPE_U8) {
+            original_mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+        } else {
+            original_mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+        }
+
+        best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;        
 
         // Search through the MTF list
         for (int j = 0; j < global_mtf.size; j++) {
@@ -497,10 +529,10 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
             // Calculate bit cost for the modified block
             float modified_bit_cost = calculate_bit_cost(j, false, candidate_bits, &global_mtf, INDEX_MASK);
 
-            // Calculate rate-distortion cost
-            float rd_cost = mse + lambda * (modified_bit_cost - original_bit_cost);
+            // Calculate rate-distortion cost with adjusted lambda and MSE thresholding
+            float rd_cost = (mse < adjusted_mse_threshold) ? (mse + adjusted_lambda * modified_bit_cost) : FLT_MAX;
 
-            if (rd_cost < best_rd_cost && mse < adjusted_mse_threshold) {
+            if (rd_cost < best_rd_cost) {
                 best_match = candidate_bits;
                 best_rd_cost = rd_cost;
             }
@@ -599,25 +631,48 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
         long long current_bits = *((long long*)(data + i * block_size + BITS_OFFSET));
         long long masked_current_bits = current_bits & INDEX_MASK;
         size_t best_match = masked_current_bits;
-        float best_mse = FLT_MAX;
+        float best_rd_cost = FLT_MAX;
 
         // Use the pre-decoded original block
         uint8_t* original_decoded = all_original_decoded + i * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
         // Calculate gradient magnitude of the original block
         float gradient_magnitude;
+        float max_possible_gradient;
         if (block_type == ASTCENC_TYPE_U8) {
             gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
+            max_possible_gradient = 255.0f * sqrtf(3.0f); // Max possible gradient for RGB in 8-bit
         } else {
             gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
+            max_possible_gradient = 1.0f * sqrtf(3.0f); // Max possible gradient for RGB in float [0,1] range
         }
         
-        // Adjust MSE_THRESHOLD based on gradient magnitude and lambda
-        float normalized_gradient = gradient_magnitude / 255.0f;
+        // Adjust MSE_THRESHOLD and lambda based on gradient magnitude
+        float normalized_gradient = gradient_magnitude / max_possible_gradient;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda;
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale;
         float adjusted_mse_threshold = BASE_MSE_THRESHOLD + gradient_factor * (MAX_MSE_THRESHOLD - BASE_MSE_THRESHOLD);
         adjusted_mse_threshold = fminf(adjusted_mse_threshold, MAX_MSE_THRESHOLD);
+        
+        // Adjust lambda based on gradient
+        float adjusted_lambda = lambda * (1.0f + gradient_factor);
+
+        // Reduce lambda for subtle gradients
+        if (normalized_gradient < SUBTLE_GRADIENT_THRESHOLD) {
+            adjusted_lambda *= SUBTLE_GRADIENT_REDUCTION;
+        }
+
+        // Decode the original block to compute initial MSE
+        astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
+        float original_mse;
+        if (block_type == ASTCENC_TYPE_U8) {
+            original_mse = calculate_mse(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+        } else {
+            original_mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+        }
+
+        float original_bit_cost = calculate_bit_cost(0, false, masked_current_bits, NULL, INDEX_MASK);
+        best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;
 
         for (size_t j = 0; j < N; j++) {
             // Create a temporary modified block
@@ -635,10 +690,15 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
                 mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
-            // Remove the temperature-based adjustment as it's not being used effectively
-            if (mse < best_mse && mse < adjusted_mse_threshold) {
+            // Calculate bit cost for the modified block
+            float modified_bit_cost = calculate_bit_cost((int)j, false, unique_bits[j].bits, NULL, INDEX_MASK);
+
+            // Calculate rate-distortion cost with adjusted lambda and MSE thresholding
+            float rd_cost = (mse < adjusted_mse_threshold) ? (mse + adjusted_lambda * modified_bit_cost) : FLT_MAX;
+
+            if (rd_cost < best_rd_cost) {
                 best_match = unique_bits[j].bits;
-                best_mse = mse;
+                best_rd_cost = rd_cost;
             }
         }
 
@@ -667,7 +727,7 @@ static void l0_pass(uint8_t* data, size_t data_len, int block_width, int block_h
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.1f;
+        lambda = 0.4f;
     }
 
     // Create a copy of the original data to decode for later passes
@@ -703,6 +763,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     // Third pass, more color endpoints
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
 
+    /*
     // L0 global solves...
 
     // Fourth pass, L0 weights (commented out for now)
@@ -724,6 +785,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
     // Ninth pass, L0 more color endpoints
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+    */
 
     // Clean up
     free(bsd);
