@@ -9,7 +9,7 @@
 
 static const float BASE_MSE_THRESHOLD = 1.0f;
 static const float MAX_MSE_THRESHOLD = 128.0f;
-static const float BASE_GRADIENT_SCALE = 100.0f;
+static const float BASE_GRADIENT_SCALE = 75.0f;
 static const float GRADIENT_POW = 1.1f;
 
 typedef struct {
