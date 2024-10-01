@@ -114,9 +114,9 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
+static float calculate_bit_cost(int mtf_value, long long literal_value, MTF_LL* mtf, long long mask) {
     literal_value &= mask;
-    if (is_literal) {
+    if (mtf_value == mtf->size) {
         return 15.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
@@ -477,9 +477,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
         uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
-        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&mtf, current_bits, INDEX_MASK), 
-                                                     !mtf_ll_contains(&mtf, current_bits, INDEX_MASK),
-                                                     current_bits, &mtf, INDEX_MASK);
+        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&mtf, current_bits, INDEX_MASK), current_bits, &mtf, INDEX_MASK);
 
         // Calculate gradient magnitude and adjust lambda
         float gradient_magnitude;
@@ -495,7 +493,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         float normalized_gradient = gradient_magnitude / max_possible_gradient;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
-        float adjusted_lambda = lambda * (1.0f + gradient_factor * 1000.f);
+        float adjusted_lambda = lambda * (gradient_factor * 1000.f);
 
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -526,7 +524,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
                 mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
-            float modified_bit_cost = calculate_bit_cost(k, false, candidate_bits, &mtf, INDEX_MASK);
+            float modified_bit_cost = calculate_bit_cost(k, candidate_bits, &mtf, INDEX_MASK);
             float rd_cost = mse + adjusted_lambda * modified_bit_cost;
 
             if (rd_cost < best_rd_cost) {
