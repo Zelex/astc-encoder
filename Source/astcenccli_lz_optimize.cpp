@@ -25,6 +25,14 @@ typedef struct {
     histo_t histogram;
 } MTF_LL;
 
+typedef struct {
+    float gradient_magnitude;
+    float adjusted_lambda;
+} block_info_t;
+
+template<typename T> static inline T max(T a, T b) { return a > b ? a : b; }
+template<typename T> static inline T min(T a, T b) { return a < b ? a : b; }
+
 static inline float log2_fast(float val) {
     union { float val; int x; } u = { val };
     float log_2 = (float)(((u.x >> 23) & 255) - 128);              
@@ -114,9 +122,9 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-static float calculate_bit_cost(int mtf_value, long long literal_value, MTF_LL* mtf, long long mask) {
+static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
     literal_value &= mask;
-    if (mtf_value == mtf->size) {
+    if (is_literal) {
         return 15.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
@@ -460,7 +468,7 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
-static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
+static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info) {
     uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
@@ -477,23 +485,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
         uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
-        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&mtf, current_bits, INDEX_MASK), current_bits, &mtf, INDEX_MASK);
-
-        // Calculate gradient magnitude and adjust lambda
-        float gradient_magnitude;
-        float max_possible_gradient;
-        if (block_type == ASTCENC_TYPE_U8) {
-            gradient_magnitude = calculate_gradient_magnitude(original_decoded, block_width, block_height, block_depth);
-            max_possible_gradient = 255.0f * sqrtf(3.0f);
-        } else {
-            gradient_magnitude = calculate_gradient_magnitude((float*)original_decoded, block_width, block_height, block_depth);
-            max_possible_gradient = 1.0f * sqrtf(3.0f);
-        }
-        
-        float normalized_gradient = gradient_magnitude / max_possible_gradient;
-        float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
-        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
-        float adjusted_lambda = lambda * (gradient_factor * 1000.f);
+        float original_bit_cost = calculate_bit_cost(mtf_ll_peek_position(&mtf, current_bits, INDEX_MASK), 
+                                                     !mtf_ll_contains(&mtf, current_bits, INDEX_MASK),
+                                                     current_bits, &mtf, INDEX_MASK);
 
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -504,6 +498,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
             original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
         }
 
+        float adjusted_lambda = block_info[block_index].adjusted_lambda;
         best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;
 
         // Search through the MTF list
@@ -524,7 +519,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
                 mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
-            float modified_bit_cost = calculate_bit_cost(k, candidate_bits, &mtf, INDEX_MASK);
+            float modified_bit_cost = calculate_bit_cost(k, false, candidate_bits, &mtf, INDEX_MASK);
             float rd_cost = mse + adjusted_lambda * modified_bit_cost;
 
             if (rd_cost < best_rd_cost) {
@@ -570,6 +565,39 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
     free(modified_decoded);
 }
 
+void print_gradient_factor_ascii(const uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, block_info_t* block_info) {
+    const int block_size = 16;
+    size_t num_blocks = data_len / block_size;
+    size_t image_width = 768 / block_width;
+    size_t image_height = 512 / block_height;
+
+    // ASCII characters to represent gradient factor, from lowest to highest
+    const char* ascii_chars = " .:-=+*#%@";
+    const size_t num_chars = strlen(ascii_chars);
+
+    printf("Gradient Factor ASCII Representation:\n");
+
+    for (int y = 0; y < image_height; y++) {
+        for (int x = 0; x < image_width; x++) {
+            size_t block_index = y * image_width + x;
+            if (block_index >= num_blocks) break;
+
+            float gradient_magnitude = block_info[block_index].gradient_magnitude;
+            float max_possible_gradient = (block_type == ASTCENC_TYPE_U8) ? 255.0f * sqrtf(3.0f) : 1.0f * sqrtf(3.0f);
+            
+            float normalized_gradient = gradient_magnitude / max_possible_gradient;
+            float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
+            float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale * 1000.f;
+
+            // Map gradient_factor to ASCII character
+            int char_index = static_cast<int>(gradient_factor * (num_chars - 1));
+            char_index = max(0, min(char_index, (int)num_chars - 1));
+            printf("%c", ascii_chars[char_index]);
+        }
+        printf("\n");
+    }
+}
+
 /**
  * @brief Optimize compressed data for better LZ compression.
  *
@@ -586,36 +614,55 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         lambda = 0.0125f;
     }
 
-    // Create a copy of the original data to decode for later passes
-    uint8_t *original_data = (uint8_t*)malloc(data_len);
-    memcpy(original_data, data, data_len);
-
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
 
-    // Decode all original blocks once
+    // Calculate gradient magnitudes and adjusted lambdas for all blocks
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
     size_t decoded_block_size = block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
     uint8_t *all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
 
     for (size_t i = 0; i < num_blocks; i++) {
-        uint8_t *original_block = original_data + i * block_size;
+        uint8_t *original_block = data + i * block_size;
         uint8_t *decoded_block = all_original_decoded + i * decoded_block_size;
         astc_decompress_block(*bsd, original_block, decoded_block, block_width, block_height, block_depth, block_type);
     }
 
-    free(original_data);
+    block_info_t* block_info = (block_info_t*)malloc(num_blocks * sizeof(block_info_t));
+    for (size_t i = 0; i < num_blocks; i++) {
+        uint8_t* decoded_block = all_original_decoded + i * decoded_block_size;
+        
+        float gradient_magnitude;
+        float max_possible_gradient;
+        if (block_type == ASTCENC_TYPE_U8) {
+            gradient_magnitude = calculate_gradient_magnitude(decoded_block, block_width, block_height, block_depth);
+            max_possible_gradient = 255.0f * sqrtf(3.0f);
+        } else {
+            gradient_magnitude = calculate_gradient_magnitude((float*)decoded_block, block_width, block_height, block_depth);
+            max_possible_gradient = 1.0f * sqrtf(3.0f);
+        }
+        
+        float normalized_gradient = gradient_magnitude / max_possible_gradient;
+        float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
+        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
+        float adjusted_lambda = lambda * (gradient_factor * 1000.f);
+
+        block_info[i].gradient_magnitude = gradient_magnitude;
+        block_info[i].adjusted_lambda = adjusted_lambda;
+    }
+
+    print_gradient_factor_ascii(data, data_len, block_width, block_height, block_depth, block_type, lambda, bsd, block_info);
 
     // MTF passes...
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
 
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
 
     // Clean up
     free(bsd);
