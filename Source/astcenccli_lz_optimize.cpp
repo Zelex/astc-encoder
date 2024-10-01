@@ -18,6 +18,7 @@ typedef struct {
     long long list[MTF_SIZE];
     int size;
     int literal_histogram[256]; // Single histogram for all bytes
+    int literal_histogram_size;
 } MTF_LL;
 
 static inline float log2_fast(float val) {
@@ -29,13 +30,16 @@ static inline float log2_fast(float val) {
     return log_2;
 } 
 
-static void mtf_ll_init(MTF_LL* mtf) {
-    mtf->size = 0;
-    memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
+static void mtf_ll_reset_histogram(MTF_LL* mtf) {
+    for(int i = 0; i < 256; i++) {
+        mtf->literal_histogram[i] = 1;
+    }
+    mtf->literal_histogram_size = 256;
 }
 
-static void mtf_ll_reset_histogram(MTF_LL* mtf) {
-    memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
+static void mtf_ll_init(MTF_LL* mtf) {
+    mtf->size = 0;
+    mtf_ll_reset_histogram(mtf);
 }
 
 // Search for a value in the MTF list
@@ -81,10 +85,14 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-static void mtf_ll_update_histogram(MTF_LL* mtf, long long value) {
+static void mtf_ll_update_histogram(MTF_LL* mtf, long long value, long long mask) {
     for (int i = 0; i < 8; i++) {
-        uint8_t byte = (value >> (i * 8)) & 0xFF;
-        mtf->literal_histogram[byte]++;
+        uint8_t m = (mask >> (i * 8)) & 0xFF;
+        if(m) {
+            uint8_t byte = (value >> (i * 8)) & 0xFF;
+            mtf->literal_histogram[byte]++;
+            mtf->literal_histogram_size++;
+        }
     }
 }
 
@@ -94,10 +102,10 @@ static float calculate_bit_cost(int mtf_value, bool is_literal, long long litera
         float total_entropy = 0.0f;
         for (int i = 0; i < 8; i++) {
             uint8_t byte = (literal_value >> (i * 8)) & 0xFF;
-            float prob = (float)mtf->literal_histogram[byte] / (MTF_SIZE * 8);
-            total_entropy += -log2_fast(prob);
+            float prob = (float)mtf->literal_histogram[byte] / (mtf->literal_histogram_size + 1);
+            total_entropy -= log2_fast(prob);
         }
-        return 64.f + total_entropy; // flag bit + entropy-coded value
+        return 15.f + total_entropy; // flag bit + entropy-coded value
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
@@ -522,7 +530,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
         // Update the literal histogram with the chosen bits
         if (!mtf_ll_contains(&mtf, best_match, INDEX_MASK)) {
-            mtf_ll_update_histogram(&mtf, best_match);
+            mtf_ll_update_histogram(&mtf, best_match, INDEX_MASK);
         }
 
         // Update the MTF with the chosen bits
