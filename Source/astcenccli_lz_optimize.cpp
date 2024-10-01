@@ -65,17 +65,17 @@ static void histo_update(histo_t *h, long long value, long long mask) {
 }
 
 static float histo_cost(histo_t *h, long long value, long long mask) {
-    float tlb = (float)h->size;
-    int c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0, c5 = 0, c6 = 0, c7 = 0;
-    if(mask & 0xFFll) { c0 = h->h[value & 0xFF]+1; tlb++; }
-    if(mask & 0xFF00ll) { c1 = h->h[(value>>8) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF0000ll) { c2 = h->h[(value>>16) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF000000ll) { c3 = h->h[(value>>24) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF00000000ll) { c4 = h->h[(value>>32) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF0000000000ll) { c5 = h->h[(value>>40) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF000000000000ll) { c6 = h->h[(value>>48) & 0xFF]+1; tlb++; }
-    if(mask & 0xFF00000000000000ll) { c7 = h->h[(value>>48) & 0xFF]+1; tlb++; }
-    return log2_fast((tlb/c0) * (tlb/c1) * (tlb/c2) * (tlb/c3) * (tlb/c4) * (tlb/c5) * (tlb/c6) * (tlb/c7));
+    double tlb = (double)h->size+8;
+    int c0 = 1, c1 = 1, c2 = 1, c3 = 1, c4 = 1, c5 = 1, c6 = 1, c7 = 1;
+    if(mask & 0xFFull) { c0 = h->h[value & 0xFF]+1; }
+    if(mask & 0xFF00ull) { c1 = h->h[(value>>8) & 0xFF]+1; }
+    if(mask & 0xFF0000ull) { c2 = h->h[(value>>16) & 0xFF]+1; }
+    if(mask & 0xFF000000ull) { c3 = h->h[(value>>24) & 0xFF]+1; }
+    if(mask & 0xFF00000000ull) { c4 = h->h[(value>>32) & 0xFF]+1; }
+    if(mask & 0xFF0000000000ull) { c5 = h->h[(value>>40) & 0xFF]+1; }
+    if(mask & 0xFF000000000000ull) { c6 = h->h[(value>>48) & 0xFF]+1; }
+    if(mask & 0xFF00000000000000ull) { c7 = h->h[(value>>48) & 0xFF]+1; }
+    return log2_fast((float)((tlb/c0) * (tlb/c1) * (tlb/c2) * (tlb/c3) * (tlb/c4) * (tlb/c5) * (tlb/c6) * (tlb/c7)));
 }
 
 static void mtf_ll_init(MTF_LL* mtf) {
