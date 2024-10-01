@@ -8,7 +8,7 @@
 #define MTF_SIZE (256+64+16+1)
 
 static const float BASE_GRADIENT_SCALE = 10.0f;
-static const float GRADIENT_POW = 1.0f;
+static const float GRADIENT_POW = 3.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
 static const float VARIANCE_THRESHOLD = 0.001f;
@@ -136,13 +136,16 @@ static float calculate_bit_cost(int mtf_value, bool is_literal, long long litera
 }
 
 template<typename T>
-static inline float calculate_mse(const T* img1, const T* img2, int total) {
+static inline float calculate_mse(const T* img1, const T* img2, const float* gradients, int total) {
     float sum = 0.0;
+    float gradient_sum = 0.0;
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
-        sum += diff * diff;
+        float weighted_diff = diff * diff * (1.0f + EDGE_WEIGHT * gradients[i / 4]);
+        sum += weighted_diff;
+        gradient_sum += (1.0f + EDGE_WEIGHT * gradients[i / 4]);
     }
-    return sum / total;
+    return sum / gradient_sum;
 }
 
 // Calculate Sum of Absolute Differences Error
@@ -491,7 +494,36 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
-static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info) {
+template<typename T>
+static void calculate_per_pixel_gradients(const T* img, int width, int height, int depth, int channels, float* gradients) {
+    int total_pixels = width * height * depth;
+    
+    for (int z = 0; z < depth; z++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+                int index = (z * height * width + y * width + x) * channels;
+
+                for (int c = 0; c < channels; c++) {
+                    if (x > 0 && x < width - 1) {
+                        gx += fabsf((float)img[index + channels + c] - (float)img[index - channels + c]);
+                    }
+                    if (y > 0 && y < height - 1) {
+                        gy += fabsf((float)img[index + width * channels + c] - (float)img[index - width * channels + c]);
+                    }
+                    if (z > 0 && z < depth - 1) {
+                        gz += fabsf((float)img[index + width * height * channels + c] - (float)img[index - width * height * channels + c]);
+                    }
+                }
+
+                float gradient = sqrtf(gx * gx + gy * gy + gz * gz) / (255.0f * channels);
+                gradients[z * height * width + y * width + x] = (1 - sigmoid(gradient));
+            }
+        }
+    }
+}
+
+static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, long long INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
     uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
@@ -515,10 +547,11 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
+        float *gradients = all_gradients + block_index * block_width * block_height * block_depth;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = calculate_mse(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
         } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
         }
 
         float adjusted_lambda = block_info[block_index].adjusted_lambda;
@@ -537,9 +570,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
             float mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                mse = calculate_mse(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
             } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                mse = calculate_mse((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
             }
 
             float modified_bit_cost = calculate_bit_cost(k, false, candidate_bits, &mtf, INDEX_MASK);
@@ -588,37 +621,43 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
     free(modified_decoded);
 }
 
-void print_gradient_factor_ascii(const uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, block_info_t* block_info) {
-    const int block_size = 16;
-    size_t num_blocks = data_len / block_size;
-    size_t image_width = 768 / block_width;
-    size_t image_height = 512 / block_height;
+void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_width, int blocks_height) {
+    char* ascii_image = (char*)malloc(blocks_width * blocks_height + blocks_height + 1);
+    
+    float min_lambda = FLT_MAX;
+    float max_lambda = -FLT_MAX;
 
-    // ASCII characters to represent gradient factor, from lowest to highest
-    const char* ascii_chars = " .:-=+*#%@";
-    const size_t num_chars = strlen(ascii_chars);
-
-    printf("Gradient Factor ASCII Representation:\n");
-
-    for (int y = 0; y < image_height; y++) {
-        for (int x = 0; x < image_width; x++) {
-            size_t block_index = y * image_width + x;
-            if (block_index >= num_blocks) break;
-
-            float gradient_magnitude = block_info[block_index].gradient_magnitude;
-            float max_possible_gradient = (block_type == ASTCENC_TYPE_U8) ? 255.0f * sqrtf(3.0f) : 1.0f * sqrtf(3.0f);
-            
-            float normalized_gradient = gradient_magnitude / max_possible_gradient;
-            float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
-            float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale * 10000.f;
-
-            // Map gradient_factor to ASCII character
-            int char_index = static_cast<int>(gradient_factor * (num_chars - 1));
-            char_index = max(0, min(char_index, (int)num_chars - 1));
-            printf("%c", ascii_chars[char_index]);
-        }
-        printf("\n");
+    // Find min and max lambda
+    for (int i = 0; i < blocks_width * blocks_height; i++) {
+        min_lambda = min(min_lambda, block_info[i].adjusted_lambda);
+        max_lambda = max(max_lambda, block_info[i].adjusted_lambda);
     }
+
+    // Create ASCII representation
+    for (int y = 0; y < blocks_height; y++) {
+        for (int x = 0; x < blocks_width; x++) {
+            int block_index = y * blocks_width + x;
+            float normalized_lambda = (block_info[block_index].adjusted_lambda - min_lambda) / (max_lambda - min_lambda);
+            
+            // Map normalized lambda to ASCII characters
+            char ascii_char;
+            if (normalized_lambda < 0.2) ascii_char = '.';
+            else if (normalized_lambda < 0.4) ascii_char = ':';
+            else if (normalized_lambda < 0.6) ascii_char = 'o';
+            else if (normalized_lambda < 0.8) ascii_char = 'O';
+            else ascii_char = '#';
+            
+            ascii_image[y * (blocks_width + 1) + x] = ascii_char;
+        }
+        ascii_image[y * (blocks_width + 1) + blocks_width] = '\n';
+    }
+    ascii_image[blocks_height * (blocks_width + 1)] = '\0';
+
+    // Print ASCII representation
+    printf("Adjusted Lambda ASCII Representation:\n");
+    printf("%s\n", ascii_image);
+
+    free(ascii_image);
 }
 
 /**
@@ -634,7 +673,7 @@ void print_gradient_factor_ascii(const uint8_t* data, size_t data_len, int block
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.1f;
+        lambda = 1.0f;
     }
 
     // Initialize block_size_descriptor once
@@ -646,48 +685,52 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     size_t num_blocks = data_len / block_size;
     size_t decoded_block_size = block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
     uint8_t *all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
+    float *all_gradients = (float*)malloc(num_blocks * block_width * block_height * block_depth * sizeof(float));
 
     for (size_t i = 0; i < num_blocks; i++) {
         uint8_t *original_block = data + i * block_size;
         uint8_t *decoded_block = all_original_decoded + i * decoded_block_size;
+        float *gradients = all_gradients + i * block_width * block_height * block_depth;
+        
         astc_decompress_block(*bsd, original_block, decoded_block, block_width, block_height, block_depth, block_type);
+        
+        if (block_type == ASTCENC_TYPE_U8) {
+            calculate_per_pixel_gradients(decoded_block, block_width, block_height, block_depth, 4, gradients);
+        } else {
+            calculate_per_pixel_gradients((float*)decoded_block, block_width, block_height, block_depth, 4, gradients);
+        }
     }
 
     block_info_t* block_info = (block_info_t*)malloc(num_blocks * sizeof(block_info_t));
     for (size_t i = 0; i < num_blocks; i++) {
-        uint8_t* decoded_block = all_original_decoded + i * decoded_block_size;
-        
-        float gradient_magnitude;
-        float max_possible_gradient;
-        if (block_type == ASTCENC_TYPE_U8) {
-            gradient_magnitude = calculate_gradient_magnitude(decoded_block, block_width, block_height, block_depth);
-            max_possible_gradient = 255.0f * sqrtf(3.0f);
-        } else {
-            gradient_magnitude = calculate_gradient_magnitude((float*)decoded_block, block_width, block_height, block_depth);
-            max_possible_gradient = 1.0f * sqrtf(3.0f);
+        float *gradients = all_gradients + i * block_width * block_height * block_depth;
+        float avg_gradient = 0.0f;
+        for (int j = 0; j < block_width * block_height * block_depth; j++) {
+            avg_gradient += gradients[j];
         }
-        
-        float normalized_gradient = gradient_magnitude / max_possible_gradient;
-        float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
-        float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
-        float adjusted_lambda = lambda * (gradient_factor * 10000.f);
+        avg_gradient /= (block_width * block_height * block_depth);
 
-        block_info[i].gradient_magnitude = gradient_magnitude;
+        float gradient_factor = powf(1 - avg_gradient, GRADIENT_POW) * BASE_GRADIENT_SCALE;
+        float adjusted_lambda = lambda * gradient_factor;
+        //printf("%f\n", adjusted_lambda);
+
+        block_info[i].gradient_magnitude = avg_gradient;
         block_info[i].adjusted_lambda = adjusted_lambda;
     }
 
-    print_gradient_factor_ascii(data, data_len, block_width, block_height, block_depth, block_type, lambda, bsd, block_info);
+    //print_adjusted_lambda_ascii(block_info, 768/block_width, 512/block_height);
 
     // MTF passes...
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
 
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
 
     // Clean up
     free(bsd);
     free(all_original_decoded);
+    free(all_gradients);
 }
