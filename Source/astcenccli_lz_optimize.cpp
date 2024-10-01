@@ -11,6 +11,9 @@ static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 1.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
+static const float VARIANCE_THRESHOLD = 0.001f;
+static const float SIGMOID_CENTER = 0.1f;
+static const float SIGMOID_STEEPNESS = 20.0f;
 
 #define ERROR_FN calculate_mse
 
@@ -32,6 +35,7 @@ typedef struct {
 
 template<typename T> static inline T max(T a, T b) { return a > b ? a : b; }
 template<typename T> static inline T min(T a, T b) { return a < b ? a : b; }
+static float sigmoid(float x) { return 1.0f / (1.0f + expf(-SIGMOID_STEEPNESS * (x - SIGMOID_CENTER))); }
 
 static inline float log2_fast(float val) {
     union { float val; int x; } u = { val };
@@ -153,39 +157,58 @@ static inline float calculate_sad(const T* img1, const T* img2, int total) {
 }
 
 template<typename T>
-static float calculate_gradient_magnitude_2d(const T* img, int width, int height, int channels) {
-    float total_magnitude = 0.0f;
+static float calculate_local_variance(const T* img, int width, int height, int channels, int x, int y, int window_size) {
+    float mean = 0.0f;
+    float mean_sq = 0.0f;
+    int count = 0;
 
-    for (int c = 0; c < channels; c++) {
-        // Horizontal gradients
-        for (int y = 0; y < height; y++) {
-            float gx = (float)img[(y * width + 3) * channels + c] - (float)img[(y * width) * channels + c];
-            total_magnitude += gx * gx * EDGE_WEIGHT;
-            
-            for (int x = 1; x < width - 1; x++) {
-                gx = (float)img[(y * width + x + 1) * channels + c] - (float)img[(y * width + x - 1) * channels + c];
-                total_magnitude += gx * gx;
+    for (int dy = -window_size/2; dy <= window_size/2; dy++) {
+        for (int dx = -window_size/2; dx <= window_size/2; dx++) {
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                float val = (float)img[(ny * width + nx) * channels] / 255.0f;
+                mean += val;
+                mean_sq += val * val;
+                count++;
             }
         }
-
-        // Vertical gradients
-        for (int x = 0; x < width; x++) {
-            float gy = (float)img[((height - 1) * width + x) * channels + c] - (float)img[x * channels + c];
-            total_magnitude += gy * gy * EDGE_WEIGHT;
-            
-            for (int y = 1; y < height - 1; y++) {
-                gy = (float)img[((y + 1) * width + x) * channels + c] - (float)img[((y - 1) * width + x) * channels + c];
-                total_magnitude += gy * gy;
-            }
-        }
-
-        // Diagonal gradients (for corners)
-        float gd1 = (float)img[((height - 1) * width + width - 1) * channels + c] - (float)img[0];
-        float gd2 = (float)img[((height - 1) * width) * channels + c] - (float)img[width - 1];
-        total_magnitude += (gd1 * gd1 + gd2 * gd2) * CORNER_WEIGHT;
     }
 
-    return sqrtf(total_magnitude) / (width * height * channels);
+    mean /= count;
+    mean_sq /= count;
+    return mean_sq - mean * mean;
+}
+
+template<typename T>
+static float calculate_gradient_magnitude_2d(const T* img, int width, int height, int channels) {
+    float total_magnitude = 0.0f;
+    int window_size = 5;  // Size of local window for variance calculation
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float local_variance = calculate_local_variance(img, width, height, channels, x, y, window_size);
+            
+            if (local_variance > VARIANCE_THRESHOLD) {
+                float gx = 0.0f, gy = 0.0f;
+                for (int c = 0; c < channels; c++) {
+                    if (x > 0 && x < width - 1) {
+                        gx += fabsf((float)img[(y * width + x + 1) * channels + c] - (float)img[(y * width + x - 1) * channels + c]);
+                    }
+                    if (y > 0 && y < height - 1) {
+                        gy += fabsf((float)img[((y + 1) * width + x) * channels + c] - (float)img[((y - 1) * width + x) * channels + c]);
+                    }
+                }
+                gx /= (255.0f * channels);
+                gy /= (255.0f * channels);
+                
+                float gradient = sqrtf(gx * gx + gy * gy);
+                total_magnitude += sigmoid(gradient);
+            }
+        }
+    }
+
+    return total_magnitude / (width * height);
 }
 
 template<typename T>
@@ -587,7 +610,7 @@ void print_gradient_factor_ascii(const uint8_t* data, size_t data_len, int block
             
             float normalized_gradient = gradient_magnitude / max_possible_gradient;
             float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
-            float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale * 1000.f;
+            float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale * 10000.f;
 
             // Map gradient_factor to ASCII character
             int char_index = static_cast<int>(gradient_factor * (num_chars - 1));
@@ -611,7 +634,7 @@ void print_gradient_factor_ascii(const uint8_t* data, size_t data_len, int block
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.0125f;
+        lambda = 0.1f;
     }
 
     // Initialize block_size_descriptor once
@@ -647,7 +670,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         float normalized_gradient = gradient_magnitude / max_possible_gradient;
         float gradient_scale = BASE_GRADIENT_SCALE * lambda; 
         float gradient_factor = powf(normalized_gradient, GRADIENT_POW) * gradient_scale; 
-        float adjusted_lambda = lambda * (gradient_factor * 1000.f);
+        float adjusted_lambda = lambda * (gradient_factor * 10000.f);
 
         block_info[i].gradient_magnitude = gradient_magnitude;
         block_info[i].adjusted_lambda = adjusted_lambda;
