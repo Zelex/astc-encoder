@@ -15,10 +15,14 @@ static const float CORNER_WEIGHT = 1.0f;
 #define ERROR_FN calculate_mse
 
 typedef struct {
+    int h[256];
+    int size;
+} histo_t;
+
+typedef struct {
     long long list[MTF_SIZE];
     int size;
-    int literal_histogram[256]; // Single histogram for all bytes
-    int literal_histogram_size;
+    histo_t histogram;
 } MTF_LL;
 
 static inline float log2_fast(float val) {
@@ -30,16 +34,41 @@ static inline float log2_fast(float val) {
     return log_2;
 } 
 
-static void mtf_ll_reset_histogram(MTF_LL* mtf) {
+static void histo_reset(histo_t *h) {
     for(int i = 0; i < 256; i++) {
-        mtf->literal_histogram[i] = 1;
+        h->h[i] = 0;
     }
-    mtf->literal_histogram_size = 256;
+    h->size = 0;
+}
+
+static void histo_update(histo_t *h, long long value, long long mask) {
+    for (int i = 0; i < 8; i++) {
+        uint8_t m = (mask >> (i * 8)) & 0xFF;
+        if(m) {
+            uint8_t byte = (value >> (i * 8)) & 0xFF;
+            h->h[byte]++;
+            h->size++;
+        }
+    }
+}
+
+static float histo_cost(histo_t *h, long long value, long long mask) {
+    float tlb = (float)h->size;
+    int c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0, c5 = 0, c6 = 0, c7 = 0;
+    if(mask & 0xFFll) { c0 = h->h[value & 0xFF]+1; tlb++; }
+    if(mask & 0xFF00ll) { c1 = h->h[(value>>8) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF0000ll) { c2 = h->h[(value>>16) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF000000ll) { c3 = h->h[(value>>24) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF00000000ll) { c4 = h->h[(value>>32) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF0000000000ll) { c5 = h->h[(value>>40) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF000000000000ll) { c6 = h->h[(value>>48) & 0xFF]+1; tlb++; }
+    if(mask & 0xFF00000000000000ll) { c7 = h->h[(value>>48) & 0xFF]+1; tlb++; }
+    return log2_fast((tlb/c0) * (tlb/c1) * (tlb/c2) * (tlb/c3) * (tlb/c4) * (tlb/c5) * (tlb/c6) * (tlb/c7));
 }
 
 static void mtf_ll_init(MTF_LL* mtf) {
     mtf->size = 0;
-    mtf_ll_reset_histogram(mtf);
+    histo_reset(&mtf->histogram);
 }
 
 // Search for a value in the MTF list
@@ -85,27 +114,10 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-static void mtf_ll_update_histogram(MTF_LL* mtf, long long value, long long mask) {
-    for (int i = 0; i < 8; i++) {
-        uint8_t m = (mask >> (i * 8)) & 0xFF;
-        if(m) {
-            uint8_t byte = (value >> (i * 8)) & 0xFF;
-            mtf->literal_histogram[byte]++;
-            mtf->literal_histogram_size++;
-        }
-    }
-}
-
 static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
     literal_value &= mask;
     if (is_literal) {
-        float total_entropy = 0.0f;
-        for (int i = 0; i < 8; i++) {
-            uint8_t byte = (literal_value >> (i * 8)) & 0xFF;
-            float prob = (float)mtf->literal_histogram[byte] / (mtf->literal_histogram_size + 1);
-            total_entropy -= log2_fast(prob);
-        }
-        return 15.f + total_entropy; // flag bit + entropy-coded value
+        return 32.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
@@ -530,7 +542,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
         // Update the literal histogram with the chosen bits
         if (!mtf_ll_contains(&mtf, best_match, INDEX_MASK)) {
-            mtf_ll_update_histogram(&mtf, best_match, INDEX_MASK);
+            histo_update(&mtf.histogram, best_match, INDEX_MASK);
         }
 
         // Update the MTF with the chosen bits
@@ -573,7 +585,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.015f;
+        lambda = 0.01f;
     }
 
     // Create a copy of the original data to decode for later passes
