@@ -129,7 +129,7 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
 static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
     literal_value &= mask;
     if (is_literal) {
-        return 15.f + histo_cost(&mtf->histogram, literal_value, mask);
+        return 8.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
@@ -496,28 +496,48 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 
 template<typename T>
 static void calculate_per_pixel_gradients(const T* img, int width, int height, int depth, int channels, float* gradients) {
-    int total_pixels = width * height * depth;
-    
+    const int total_pixels = width * height * depth;
+    const float norm_factor = 1.0f / (255.0f * channels);
+
+    // Pre-compute edge weights
+    const float edge_weights[4] = {EDGE_WEIGHT, 1.0f, 1.0f, CORNER_WEIGHT};
+
     for (int z = 0; z < depth; z++) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 float gx = 0.0f, gy = 0.0f, gz = 0.0f;
                 int index = (z * height * width + y * width + x) * channels;
 
+                // Determine edge type (corner, edge, or center)
+                int edge_type = (x == 0 || x == width - 1) + (y == 0 || y == height - 1) + (z == 0 || z == depth - 1);
+
                 for (int c = 0; c < channels; c++) {
-                    if (x > 0 && x < width - 1) {
-                        gx += fabsf((float)img[index + channels + c] - (float)img[index - channels + c]);
+                    // X direction
+                    if (x < width - 1) {
+                        gx += fabsf((float)img[index + channels + c] - (float)img[index + c]);
+                    } else if (x > 0) {
+                        gx += fabsf((float)img[index + c] - (float)img[index - channels + c]);
                     }
-                    if (y > 0 && y < height - 1) {
-                        gy += fabsf((float)img[index + width * channels + c] - (float)img[index - width * channels + c]);
+
+                    // Y direction
+                    if (y < height - 1) {
+                        gy += fabsf((float)img[index + width * channels + c] - (float)img[index + c]);
+                    } else if (y > 0) {
+                        gy += fabsf((float)img[index + c] - (float)img[index - width * channels + c]);
                     }
-                    if (z > 0 && z < depth - 1) {
-                        gz += fabsf((float)img[index + width * height * channels + c] - (float)img[index - width * height * channels + c]);
+
+                    // Z direction
+                    if (depth > 1) {
+                        if (z < depth - 1) {
+                            gz += fabsf((float)img[index + width * height * channels + c] - (float)img[index + c]);
+                        } else if (z > 0) {
+                            gz += fabsf((float)img[index + c] - (float)img[index - width * height * channels + c]);
+                        }
                     }
                 }
 
-                float gradient = sqrtf(gx * gx + gy * gy + gz * gz) / (255.0f * channels);
-                gradients[z * height * width + y * width + x] = (1 - sigmoid(gradient));
+                float gradient = sqrtf(gx * gx + gy * gy + gz * gz) * norm_factor;
+                gradients[z * height * width + y * width + x] = (1.0f - sigmoid(gradient)) * edge_weights[edge_type];
             }
         }
     }
