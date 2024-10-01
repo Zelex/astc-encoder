@@ -117,7 +117,7 @@ static int mtf_ll_peek_position(MTF_LL* mtf, long long value, long long mask) {
 static float calculate_bit_cost(int mtf_value, bool is_literal, long long literal_value, MTF_LL* mtf, long long mask) {
     literal_value &= mask;
     if (is_literal) {
-        return 32.f + histo_cost(&mtf->histogram, literal_value, mask);
+        return 15.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
@@ -585,7 +585,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.01f;
+        lambda = 0.0125f;
     }
 
     // Create a copy of the original data to decode for later passes
