@@ -34,6 +34,10 @@ static void mtf_ll_init(MTF_LL* mtf) {
     memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
 }
 
+static void mtf_ll_reset_histogram(MTF_LL* mtf) {
+    memset(mtf->literal_histogram, 0, sizeof(mtf->literal_histogram)); // Initialize histogram
+}
+
 // Search for a value in the MTF list
 static int mtf_ll_search(MTF_LL* mtf, long long value, long long mask) {
     value &= mask;
@@ -93,9 +97,9 @@ static float calculate_bit_cost(int mtf_value, bool is_literal, long long litera
             float prob = (float)mtf->literal_histogram[byte] / (MTF_SIZE * 8);
             total_entropy += -log2_fast(prob);
         }
-        return 1.0f + total_entropy; // flag bit + entropy-coded value
+        return 64.f + total_entropy; // flag bit + entropy-coded value
     } else {
-        return log2_fast((float)(mtf_value + 1)); // Cost for an MTF value
+        return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
 }
 
@@ -516,19 +520,19 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
             *((long long*)(current_block + BITS_OFFSET)) = new_bits;
         }
 
-        // Update the MTF with the chosen bits
-        mtf_ll_encode(&mtf, best_match, INDEX_MASK);
-
         // Update the literal histogram with the chosen bits
         if (!mtf_ll_contains(&mtf, best_match, INDEX_MASK)) {
             mtf_ll_update_histogram(&mtf, best_match);
         }
+
+        // Update the MTF with the chosen bits
+        mtf_ll_encode(&mtf, best_match, INDEX_MASK);
     };
 
     // Forward pass
     for (size_t i = 0; i < num_blocks; i++) {
         if (i % 8192 == 0 && i > 0) {
-            mtf_ll_init(&mtf);
+            //mtf_ll_reset_histogram(&mtf);
         }
         process_block(i);
     }
@@ -539,7 +543,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
     // Backward pass
     for (size_t i = num_blocks; i-- > 0;) {
         if (i % 8192 == 8191 && i < num_blocks - 1) {
-            mtf_ll_init(&mtf);
+            //mtf_ll_reset_histogram(&mtf);
         }
         process_block(i);
     }
@@ -561,7 +565,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 0.002f;
+        lambda = 0.015f;
     }
 
     // Create a copy of the original data to decode for later passes
