@@ -248,15 +248,25 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, const float* gradients, int total) {
+#if 0
+    // Just normal MSE
+    float sum = 0.0;
+    for (int i = 0; i < total; i++) {
+        float diff = (float)img1[i] - (float)img2[i];
+        sum += diff * diff;
+    }
+    return sum / total;
+#else
     float sum = 0.0;
     float gradient_sum = 0.0;
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
-        float weighted_diff = diff * diff * gradients[i];
+        float weighted_diff = diff * diff * gradients[i/4];
         sum += weighted_diff;
-        gradient_sum += (1.0f + gradients[i / 4]);
+        gradient_sum += gradients[i/4];
     }
     return sum / gradient_sum;
+#endif
 }
 
 // Calculate Sum of Absolute Differences Error
@@ -265,9 +275,9 @@ static inline float calculate_sad(const T* img1, const T* img2, const float* gra
     float sum = 0.0;
     float gradient_sum = 0.0;
     for (int i = 0; i < total; i++) {
-        float diff = ((float)img1[i] - (float)img2[i]) * gradients[i];
+        float diff = ((float)img1[i] - (float)img2[i]) * gradients[i/4];
         sum += diff < 0 ? -diff : diff;
-        gradient_sum += gradients[i];
+        gradient_sum += gradients[i/4];
     }
     return sum / gradient_sum;
 }
@@ -687,13 +697,20 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         int128_t WEIGHTS_MASK = INDEX_MASK;
         if (is_equal(WEIGHTS_MASK, create_from_int(0))) {
             int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
-            
-            // Create the mask using 128-bit operations
             int128_t one = create_from_int(1);
             int128_t mask = shift_left(one, WEIGHT_BITS);
             mask = subtract(mask, one);
             WEIGHTS_MASK = shift_left(mask, 128 - WEIGHT_BITS);
-            //printf("%s\n", to_string(WEIGHTS_MASK));
+        } else if (is_equal(WEIGHTS_MASK, create_from_int(1))) {
+            // Create a mask with all the OTHER bits set 
+            int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
+            int128_t one = create_from_int(1);
+            int128_t mask = shift_left(one, WEIGHT_BITS);
+            mask = subtract(mask, one);
+            WEIGHTS_MASK = shift_left(mask, 128 - WEIGHT_BITS);
+            WEIGHTS_MASK = bitwise_not(WEIGHTS_MASK);
+            // Turn off the first 17 bits (Mode + CEM) (Doesn't work??)
+            //WEIGHTS_MASK = bitwise_and(WEIGHTS_MASK, bitwise_not(create_from_int(0x1FFFF)));
         }
 
         uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
@@ -885,6 +902,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
     // MTF passes...
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+
     //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 7, 0xFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
