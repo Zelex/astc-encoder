@@ -248,7 +248,7 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, const float* gradients, int total) {
-#if 0
+#if 1
     // Just normal MSE
     float sum = 0.0;
     for (int i = 0; i < total; i++) {
@@ -853,8 +853,11 @@ void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_widt
  */
 void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
-        lambda = 1.0f;
+        lambda = 10.0f;
     }
+
+    // Map lambda from [10, 40] to [1.0, 2.5]
+    lambda = 1.0f + (lambda - 10.0f) * (2.5f - 1.0f) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
@@ -905,15 +908,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
-
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info, all_gradients);
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 7, 0xFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
-
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 8, 0xFFFFFFFFFFFF0000ull, bsd, all_original_decoded, block_info, all_gradients);
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
-    //mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 2, 0xFFFFFFFFFFFFFFFFull, bsd, all_original_decoded, block_info, all_gradients);
 
     // Clean up
     free(bsd);
