@@ -138,8 +138,8 @@ typedef struct {
 } MTF_LL;
 
 typedef struct {
-    float gradient_magnitude;
-    float adjusted_lambda;
+    float adjusted_lambda_weights;
+    float adjusted_lambda_endpoints;
 } block_info_t;
 
 template<typename T> static inline T max(T a, T b) { return a > b ? a : b; }
@@ -250,25 +250,15 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, const float* gradients, int total) {
-#if 1
-    // Just normal MSE
     float sum = 0.0;
-    for (int i = 0; i < total; i++) {
-        float diff = (float)img1[i] - (float)img2[i];
-        sum += diff * diff;
+    const float weights[4] = {0.299f, 0.587f, 0.114f, 1.0f}; // R, G, B, A weights
+    for (int i = 0; i < total; i += 4) {
+        for (int c = 0; c < 4; c++) {
+            float diff = (float)img1[i + c] - (float)img2[i + c];
+            sum += weights[c] * diff * diff;
+        }
     }
-    return sum / total;
-#else
-    float sum = 0.0;
-    float gradient_sum = 0.0;
-    for (int i = 0; i < total; i++) {
-        float diff = (float)img1[i] - (float)img2[i];
-        float weighted_diff = diff * diff * gradients[i/4];
-        sum += weighted_diff;
-        gradient_sum += gradients[i/4];
-    }
-    return sum / gradient_sum;
-#endif
+    return sum / (total / 4);
 }
 
 // Calculate Sum of Absolute Differences Error
@@ -282,100 +272,6 @@ static inline float calculate_sad(const T* img1, const T* img2, const float* gra
         gradient_sum += gradients[i/4];
     }
     return sum / gradient_sum;
-}
-
-template<typename T>
-static float calculate_local_variance(const T* img, int width, int height, int channels, int x, int y, int window_size) {
-    float mean = 0.0f;
-    float mean_sq = 0.0f;
-    int count = 0;
-
-    for (int dy = -window_size/2; dy <= window_size/2; dy++) {
-        for (int dx = -window_size/2; dx <= window_size/2; dx++) {
-            int nx = x + dx;
-            int ny = y + dy;
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                float val = (float)img[(ny * width + nx) * channels] / 255.0f;
-                mean += val;
-                mean_sq += val * val;
-                count++;
-            }
-        }
-    }
-
-    mean /= count;
-    mean_sq /= count;
-    return mean_sq - mean * mean;
-}
-
-template<typename T>
-static float calculate_gradient_magnitude_2d(const T* img, int width, int height, int channels) {
-    float total_magnitude = 0.0f;
-    int window_size = 5;  // Size of local window for variance calculation
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float local_variance = calculate_local_variance(img, width, height, channels, x, y, window_size);
-            
-            if (local_variance > VARIANCE_THRESHOLD) {
-                float gx = 0.0f, gy = 0.0f;
-                for (int c = 0; c < channels; c++) {
-                    if (x > 0 && x < width - 1) {
-                        gx += fabsf((float)img[(y * width + x + 1) * channels + c] - (float)img[(y * width + x - 1) * channels + c]);
-                    }
-                    if (y > 0 && y < height - 1) {
-                        gy += fabsf((float)img[((y + 1) * width + x) * channels + c] - (float)img[((y - 1) * width + x) * channels + c]);
-                    }
-                }
-                gx /= (255.0f * channels);
-                gy /= (255.0f * channels);
-                
-                float gradient = sqrtf(gx * gx + gy * gy);
-                total_magnitude += sigmoid(gradient);
-            }
-        }
-    }
-
-    return total_magnitude / (width * height);
-}
-
-template<typename T>
-static float calculate_gradient_magnitude_3d(const T* img, int width, int height, int depth, int channels) {
-    float total_magnitude = 0.0f;
-
-    for (int c = 0; c < channels; c++) {
-        for (int z = 0; z < depth; z++) {
-            // XY plane gradients
-            total_magnitude += calculate_gradient_magnitude_2d(img + z * width * height * channels, width, height, channels);
-        }
-
-        // Z-direction gradients
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                float gz = (float)img[((depth - 1) * height * width + y * width + x) * channels + c] - 
-                           (float)img[(y * width + x) * channels + c];
-                total_magnitude += gz * gz * EDGE_WEIGHT;
-
-                for (int z = 1; z < depth - 1; z++) {
-                    gz = (float)img[(((z + 1) * height * width + y * width + x) * channels) + c] - 
-                         (float)img[(((z - 1) * height * width + y * width + x) * channels) + c];
-                    total_magnitude += gz * gz;
-                }
-            }
-        }
-    }
-
-    return sqrtf(total_magnitude) / (width * height * depth * channels);
-}
-
-template<typename T>
-static float calculate_gradient_magnitude(const T* img, int width, int height, int depth) {
-    int channels = 4; // Assuming RGBA
-    if (depth == 1) {
-        return calculate_gradient_magnitude_2d(img, width, height, channels);
-    } else {
-        return calculate_gradient_magnitude_3d(img, width, height, depth, channels);
-    }
 }
 
 static void astc_decompress_block(
@@ -869,7 +765,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
             original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
         }
 
-        float adjusted_lambda = block_info[block_index].adjusted_lambda;
+        float adjusted_lambda = is_equal(INDEX_MASK, create_from_int(0))
+            ? block_info[block_index].adjusted_lambda_weights 
+            : block_info[block_index].adjusted_lambda_endpoints;
         float best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;
 
         // Search through the MTF list
@@ -951,15 +849,15 @@ void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_widt
 
     // Find min and max lambda
     for (int i = 0; i < blocks_width * blocks_height; i++) {
-        min_lambda = min(min_lambda, block_info[i].adjusted_lambda);
-        max_lambda = max(max_lambda, block_info[i].adjusted_lambda);
+        min_lambda = min(min_lambda, block_info[i].adjusted_lambda_weights);
+        max_lambda = max(max_lambda, block_info[i].adjusted_lambda_weights);
     }
 
     // Create ASCII representation
     for (int y = 0; y < blocks_height; y++) {
         for (int x = 0; x < blocks_width; x++) {
             int block_index = y * blocks_width + x;
-            float normalized_lambda = (block_info[block_index].adjusted_lambda - min_lambda) / (max_lambda - min_lambda);
+            float normalized_lambda = (block_info[block_index].adjusted_lambda_weights - min_lambda) / (max_lambda - min_lambda);
             
             // Map normalized lambda to ASCII characters
             char ascii_char;
@@ -998,8 +896,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         lambda = 10.0f;
     }
 
-    // Map lambda from [10, 40] to [1.0, 2.5]
-    lambda = 1.0f + (lambda - 10.0f) * (2.5f - 1.0f) / (40.0f - 10.0f);
+    // Map lambda from [10, 40] to [0.5, 1.5]
+    float lambda_min = 0.5f;
+    float lambda_max = 1.5f;
+    lambda = lambda_min + (lambda - 10.0f) * (lambda_max - lambda_min) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
@@ -1036,11 +936,11 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         avg_gradient /= (block_width * block_height * block_depth);
 
         float gradient_factor = powf(1 - avg_gradient, GRADIENT_POW) * BASE_GRADIENT_SCALE;
-        float adjusted_lambda = lambda * gradient_factor;
-        //printf("%f\n", adjusted_lambda);
+        float adjusted_lambda_weights = lambda * gradient_factor;
+        float adjusted_lambda_endpoints = lambda * powf(gradient_factor, 0.5f); // Less aggressive adjustment for endpoints
 
-        block_info[i].gradient_magnitude = avg_gradient;
-        block_info[i].adjusted_lambda = adjusted_lambda;
+        block_info[i].adjusted_lambda_weights = adjusted_lambda_weights;
+        block_info[i].adjusted_lambda_endpoints = adjusted_lambda_endpoints;
     }
 
     //print_adjusted_lambda_ascii(block_info, 768/block_width, 512/block_height);
