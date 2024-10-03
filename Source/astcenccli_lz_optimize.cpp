@@ -3,6 +3,8 @@
 #include "astcenc.h"
 #include "astcenccli_internal.h"
 #include "astcenc_internal_entry.h"
+#include "astcenc_internal.h"
+#include "astcenc_vecmathlib.h"
 
 #if defined(_MSC_VER) && defined(_M_X64)
     #include <intrin.h>
@@ -420,6 +422,146 @@ static void astc_decompress_block(
         }
     }
 }
+
+void process_and_recalculate_astc_block(
+    const block_size_descriptor& bsd,
+    uint8_t* block_ptr,
+    int block_width,
+    int block_height,
+    int block_depth,
+    int block_type,
+    const uint8_t* original_decoded)
+{
+    // Extract block information
+    symbolic_compressed_block scb;
+    physical_to_symbolic(bsd, block_ptr, scb);
+
+    if (scb.block_type == SYM_BTYPE_CONST_U16) {
+        return;
+    }
+
+    // Get block mode and partition info
+    block_mode mode = bsd.get_block_mode(scb.block_mode);
+    const auto& pi = bsd.get_partition_info(scb.partition_count, scb.partition_index);
+    const auto& di = bsd.get_decimation_info(mode.decimation_mode);
+
+    bool is_dual_plane = mode.is_dual_plane != 0;
+    unsigned int plane2_component = scb.plane2_component;
+    
+    // Initialize endpoints
+    endpoints ep;
+    ep.partition_count = scb.partition_count;
+
+    // Initialize rgbs and rgbo vectors
+    vfloat4 rgbs_vectors[BLOCK_MAX_PARTITIONS];
+    vfloat4 rgbo_vectors[BLOCK_MAX_PARTITIONS];
+
+    // Create an image_block from the pre-decoded data
+    image_block blk;
+    blk.texel_count = block_width * block_height * block_depth;
+    for (int i = 0; i < blk.texel_count; i++) {
+        if (block_type == ASTCENC_TYPE_U8) {
+            blk.data_r[i] = original_decoded[i * 4 + 0] / 255.0f;
+            blk.data_g[i] = original_decoded[i * 4 + 1] / 255.0f;
+            blk.data_b[i] = original_decoded[i * 4 + 2] / 255.0f;
+            blk.data_a[i] = original_decoded[i * 4 + 3] / 255.0f;
+        } else {
+            const float* original_decoded_f = reinterpret_cast<const float*>(original_decoded);
+            blk.data_r[i] = original_decoded_f[i * 4 + 0];
+            blk.data_g[i] = original_decoded_f[i * 4 + 1];
+            blk.data_b[i] = original_decoded_f[i * 4 + 2];
+            blk.data_a[i] = original_decoded_f[i * 4 + 3];
+        }
+    }
+
+    // Set up other image_block properties
+    blk.xpos = 0;
+    blk.ypos = 0;
+    blk.zpos = 0;
+    blk.data_min = vfloat4::zero();
+    blk.data_max = vfloat4(1.0f);
+    blk.grayscale = false;
+
+    // Compute channel means and set rgb_lns and alpha_lns flags
+    vfloat4 ch_sum = vfloat4::zero();
+    for (int i = 0; i < blk.texel_count; i++) {
+        ch_sum += blk.texel(i);
+    }
+    blk.data_mean = ch_sum / static_cast<float>(blk.texel_count);
+    blk.rgb_lns[0] = blk.data_max.lane<0>() > 1.0f || blk.data_max.lane<1>() > 1.0f || blk.data_max.lane<2>() > 1.0f;
+    blk.alpha_lns[0] = blk.data_max.lane<3>() > 1.0f;
+
+    // Set channel weights (assuming equal weights for simplicity)
+    blk.channel_weight = vfloat4(1.0f);
+
+    for (unsigned int i = 0; i < scb.partition_count; i++) {
+        vint4 color0, color1;
+        bool rgb_hdr, alpha_hdr;
+        
+        // Determine the appropriate astcenc_profile based on block_type
+        astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
+
+        unpack_color_endpoints(
+            decode_mode,
+            scb.color_formats[i],
+            scb.color_values[i],
+            rgb_hdr,
+            alpha_hdr,
+            color0,
+            color1
+        );
+
+        ep.endpt0[i] = int_to_float(color0) * (1.0f / 255.0f);
+        ep.endpt1[i] = int_to_float(color1) * (1.0f / 255.0f);
+    }
+
+    if (is_dual_plane)
+    {
+        recompute_ideal_colors_2planes(
+            blk, bsd, di,
+            scb.weights, scb.weights + WEIGHTS_PLANE2_OFFSET, 
+            ep, rgbs_vectors[0], rgbo_vectors[0], plane2_component
+        );
+    }
+    else
+    {
+        recompute_ideal_colors_1plane(
+            blk, pi, di, scb.weights,
+            ep, rgbs_vectors, rgbo_vectors
+        );
+    }
+
+    // Update endpoints in the symbolic compressed block
+    for (unsigned int i = 0; i < scb.partition_count; i++) {
+        vfloat4 endpt0 = ep.endpt0[i];
+        vfloat4 endpt1 = ep.endpt1[i];
+
+        // Quantize endpoints
+        vfloat4 color0 = endpt0 * 65535.0f;
+        vfloat4 color1 = endpt1 * 65535.0f;
+
+        quant_method quant_level = static_cast<quant_method>(mode.quant_mode);
+
+        // Note/TODO: Pack Color endpoints doesn't support RGB_DELTA or RGBA_DELTA
+		uint8_t fmt = scb.color_formats[i];
+        if (quant_level > QUANT_6 && (fmt == FMT_RGB || fmt == FMT_RGBA)) {
+            // Store quantized endpoints
+            scb.color_formats[i] = pack_color_endpoints(
+                color0,
+                color1,
+                rgbs_vectors[i],
+                rgbo_vectors[i],
+                fmt,
+                scb.color_values[i],
+                quant_level
+            );
+        }
+    }
+
+    // Compress to a physical block
+    symbolic_to_physical(bsd, scb, block_ptr);
+}
+
 
 int get_weight_bits(uint8_t *data, int block_width, int block_height, int block_depth)
 {
@@ -905,6 +1047,16 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
 
     // MTF passes...
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+    
+    // Process and recalculate each block
+    /* // TODO: this produces worse results! Check kodim03
+    for (size_t i = 0; i < num_blocks; i++) {
+        uint8_t* block_ptr = data + i * block_size;
+        const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
+        process_and_recalculate_astc_block(*bsd, block_ptr, block_width, block_height, block_depth, block_type, original_decoded);
+    }
+    */
+
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
