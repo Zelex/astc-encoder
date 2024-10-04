@@ -767,6 +767,10 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         int128_t WEIGHTS_MASK = INDEX_MASK;
         if (is_equal(WEIGHTS_MASK, create_from_int(0))) {
             int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
+            // edge case, constant color blocks
+            if (WEIGHT_BITS == 0) {
+                return;
+            }
             int128_t one = create_from_int(1);
             int128_t mask = shift_left(one, WEIGHT_BITS);
             mask = subtract(mask, one);
@@ -839,11 +843,8 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
             );
             *((int128_t*)(current_block + BITS_OFFSET)) = new_bits;
         }
-
 		histo_update(&mtf.histogram, best_match, bitwise_not(create_from_int(0)));
-
-        // Update the MTF with the chosen bits
-        mtf_ll_encode(&mtf, best_match, WEIGHTS_MASK);
+		mtf_ll_encode(&mtf, best_match, WEIGHTS_MASK);
     };
 
     // Note: slightly better to do backwards first. due to tie breakers, you want the forward pass to always win.
