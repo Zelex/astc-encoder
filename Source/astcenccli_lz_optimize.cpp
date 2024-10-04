@@ -840,12 +840,7 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
             *((int128_t*)(current_block + BITS_OFFSET)) = new_bits;
         }
 
-        // Update the literal histogram with the chosen bits
-        if (!mtf_ll_contains(&mtf, best_match, WEIGHTS_MASK)) {
-            histo_update(&mtf.histogram, best_match, WEIGHTS_MASK);
-        }
-        // Note/TODO: assumes this wasn't a match
-		histo_update(&mtf.histogram, best_match, bitwise_not(WEIGHTS_MASK));
+		histo_update(&mtf.histogram, best_match, bitwise_not(create_from_int(0)));
 
         // Update the MTF with the chosen bits
         mtf_ll_encode(&mtf, best_match, WEIGHTS_MASK);
