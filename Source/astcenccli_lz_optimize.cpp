@@ -704,7 +704,40 @@ static void calculate_per_pixel_gradients(const T* img, int width, int height, i
     }
 }
 
-static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, const int128_t INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
+static inline uint32_t xy_to_morton(uint32_t x, uint32_t y) {
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+
+    y = (y | (y << 8)) & 0x00FF00FF;
+    y = (y | (y << 4)) & 0x0F0F0F0F;
+    y = (y | (y << 2)) & 0x33333333;
+    y = (y | (y << 1)) & 0x55555555;
+
+    return x | (y << 1);
+}
+
+static inline uint32_t xyz_to_morton(uint32_t x, uint32_t y, uint32_t z) {
+    x = (x | (x << 16)) & 0x030000FF;
+    x = (x | (x <<  8)) & 0x0300F00F;
+    x = (x | (x <<  4)) & 0x030C30C3;
+    x = (x | (x <<  2)) & 0x09249249;
+
+    y = (y | (y << 16)) & 0x030000FF;
+    y = (y | (y <<  8)) & 0x0300F00F;
+    y = (y | (y <<  4)) & 0x030C30C3;
+    y = (y | (y <<  2)) & 0x09249249;
+
+    z = (z | (z << 16)) & 0x030000FF;
+    z = (z | (z <<  8)) & 0x0300F00F;
+    z = (z | (z <<  4)) & 0x030C30C3;
+    z = (z | (z <<  2)) & 0x09249249;
+
+    return x | (y << 1) | (z << 2);
+}
+
+static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, int BITS_OFFSET, const int128_t INDEX_MASK, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
     uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
@@ -811,6 +844,8 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         if (!mtf_ll_contains(&mtf, best_match, WEIGHTS_MASK)) {
             histo_update(&mtf.histogram, best_match, WEIGHTS_MASK);
         }
+        // Note/TODO: assumes this wasn't a match
+		histo_update(&mtf.histogram, best_match, bitwise_not(WEIGHTS_MASK));
 
         // Update the MTF with the chosen bits
         mtf_ll_encode(&mtf, best_match, WEIGHTS_MASK);
@@ -818,21 +853,41 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
 
     // Note: slightly better to do backwards first. due to tie breakers, you want the forward pass to always win.
 
+    // Morton order pass
+    mtf_ll_init(&mtf);
+    if(block_depth > 1) {
+        for (int z = 0; z < blocks_z; z++) {
+            for (int y = 0; y < blocks_y; y++) {
+                for (int x = 0; x < blocks_x; x++) {
+                    uint32_t morton = xyz_to_morton(x, y, z);
+                    size_t block_index = morton;
+                    if (block_index < num_blocks) {
+                        process_block(block_index);
+                    }
+                }
+            }
+        }
+    } else {
+        for (int y = 0; y < blocks_y; y++) {
+            for (int x = 0; x < blocks_x; x++) {
+                uint32_t morton = xy_to_morton(x, y);
+                size_t block_index = morton;
+                if (block_index < num_blocks) {
+                    process_block(block_index);
+                }
+            }
+        }
+    }
+
     // Backward pass
     mtf_ll_init(&mtf);
     for (size_t i = num_blocks; i-- > 0;) {
-        if (i % 8192 == 8191 && i < num_blocks - 1) {
-            //mtf_ll_reset_histogram(&mtf);
-        }
         process_block(i);
     }
 
     // Forward pass
     mtf_ll_init(&mtf);
     for (size_t i = 0; i < num_blocks; i++) {
-        if (i % 8192 == 0 && i > 0) {
-            //mtf_ll_reset_histogram(&mtf);
-        }
         process_block(i);
     }
 
@@ -880,18 +935,7 @@ void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_widt
     free(ascii_image);
 }
 
-/**
- * @brief Optimize compressed data for better LZ compression.
- *
- * @param data          The compressed image data.
- * @param data_len      The length of the compressed data.
- * @param block_width   The width of each compressed block.
- * @param block_height  The height of each compressed block.
- * @param block_depth   The depth of each compressed block.
- * @param block_type    The type of each compressed block.
- * @param lambda        The rate-distortion trade-off parameter.
- */
-void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth, int block_type, float lambda) {
+void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
         lambda = 10.0f;
     }
@@ -946,7 +990,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
     //print_adjusted_lambda_ascii(block_info, 768/block_width, 512/block_height);
 
     // MTF passes...
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     
     // Process and recalculate each block
     /* // TODO: this produces worse results! Check kodim03
@@ -955,11 +999,11 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int block_width, int block_
         const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
         process_and_recalculate_astc_block(*bsd, block_ptr, block_width, block_height, block_depth, block_type, original_decoded);
     }
-    */
+    //*/
 
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
-    mtf_pass(data, data_len, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, 0, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
     // Clean up
     free(bsd);
