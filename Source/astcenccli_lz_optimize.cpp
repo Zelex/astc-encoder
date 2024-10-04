@@ -710,7 +710,6 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
     size_t num_blocks = data_len / block_size;
 
     MTF_LL mtf;
-    mtf_ll_init(&mtf);
 
 
     // Initialize weight bits table -- block size matters in determining that certain ones are errors
@@ -817,20 +816,21 @@ static void mtf_pass(uint8_t* data, size_t data_len, int block_width, int block_
         mtf_ll_encode(&mtf, best_match, WEIGHTS_MASK);
     };
 
-    // Forward pass
-    for (size_t i = 0; i < num_blocks; i++) {
-        if (i % 8192 == 0 && i > 0) {
+    // Note: slightly better to do backwards first. due to tie breakers, you want the forward pass to always win.
+
+    // Backward pass
+    mtf_ll_init(&mtf);
+    for (size_t i = num_blocks; i-- > 0;) {
+        if (i % 8192 == 8191 && i < num_blocks - 1) {
             //mtf_ll_reset_histogram(&mtf);
         }
         process_block(i);
     }
 
-    // Reset MTF for backward pass
+    // Forward pass
     mtf_ll_init(&mtf);
-
-    // Backward pass
-    for (size_t i = num_blocks; i-- > 0;) {
-        if (i % 8192 == 8191 && i < num_blocks - 1) {
+    for (size_t i = 0; i < num_blocks; i++) {
+        if (i % 8192 == 0 && i > 0) {
             //mtf_ll_reset_histogram(&mtf);
         }
         process_block(i);
