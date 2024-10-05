@@ -265,6 +265,24 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
 }
 
 template<typename T>
+static inline float calculate_nmse(const T* x, const T* y, int n) {
+    double sum_squared_diff = 0;
+    double sum_x2 = 0;
+
+    for (int i = 0; i < n; i++) {
+        double diff = x[i] - y[i];
+        sum_squared_diff += diff * diff;
+        sum_x2 += x[i] * x[i];
+    }
+
+    if (sum_x2 == 0) {
+        return (sum_squared_diff == 0) ? 0 : INFINITY;
+    }
+
+    return (float)(sum_squared_diff / sum_x2);
+}
+
+template<typename T>
 static inline float calculate_ssim(const T* x, const T* y, int n) {
     double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
     const double C1 = 0.01 * 0.01;
