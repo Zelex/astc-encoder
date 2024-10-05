@@ -751,19 +751,22 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         int128_t current_bits = *((int128_t*)(current_block));
         int128_t best_match = current_bits;
 
-        // Generate mask from weights_bits
+        int mode = ((uint16_t*)current_block)[0] & 0x7ff;
+        int WEIGHT_BITS = weight_bits[mode];
+        
         int128_t WEIGHTS_MASK = INDEX_MASK;
-        if (is_equal(WEIGHTS_MASK, create_from_int(0))) {
-            int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
+        bool is_weights_search = is_equal(WEIGHTS_MASK, create_from_int(0));
+
+        // Generate mask from weights_bits
+        if (is_weights_search) {
             // edge case, constant color blocks
             if (WEIGHT_BITS == 0) {
                 return;
             }
             int128_t one = create_from_int(1);
 			WEIGHTS_MASK = shift_left(subtract(shift_left(one, WEIGHT_BITS), one), 128 - WEIGHT_BITS);
-        } else if (is_equal(WEIGHTS_MASK, create_from_int(1))) {
+        } else {
             // Create a mask with all the OTHER bits set 
-            int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
             int128_t one = create_from_int(1);
 			WEIGHTS_MASK = shift_left(subtract(shift_left(one, WEIGHT_BITS), one), 128 - WEIGHT_BITS);
             WEIGHTS_MASK = bitwise_not(WEIGHTS_MASK);
@@ -785,14 +788,23 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
             original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
         }
 
-        float adjusted_lambda = is_equal(INDEX_MASK, create_from_int(0))
-            ? block_info[block_index].adjusted_lambda_weights 
-            : block_info[block_index].adjusted_lambda_endpoints;
+        float adjusted_lambda = is_weights_search ? block_info[block_index].adjusted_lambda_weights : block_info[block_index].adjusted_lambda_endpoints;
         float best_rd_cost = original_mse + adjusted_lambda * original_bit_cost;
 
         // Search through the MTF list
         for (int k = 0; k < mtf.size; k++) {
             int128_t candidate_bits = mtf.list[k];
+            int candidate_mode = ((uint16_t*)&candidate_bits)[0] & 0x7ff;
+            int candidate_weight_bits = weight_bits[candidate_mode];
+            if (is_weights_search) {
+				if(candidate_weight_bits != WEIGHT_BITS) {
+					continue;
+				}
+            } else {
+				if(candidate_weight_bits < WEIGHT_BITS) {
+					continue;
+				}
+            }
             
             uint8_t temp_block[16];
             memcpy(temp_block, current_block, 16);
@@ -938,7 +950,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         int128_t current_bits = *((int128_t*)current_block);
         int128_t best_match = current_bits;
 
-        int WEIGHT_BITS = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
+        
+        int mode = ((uint16_t*)current_block)[0] & 0x7ff;
+        int WEIGHT_BITS = weight_bits[mode];
         if (WEIGHT_BITS == 0) {
             return; // Constant color block, skip
         }
@@ -964,12 +978,28 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
                                             adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
 
+        int weights_search_size = 16;
+        int endpoints_search_size = 16;
+
         // Search through both MTF lists
-        for (int k_weights = 0; k_weights < mtf_weights.size; k_weights++) {
-            for (int k_endpoints = 0; k_endpoints < mtf_endpoints.size; k_endpoints++) {
-                int128_t candidate_weights = mtf_weights.list[k_weights];
+        //for (int k_weights = 0; k_weights < mtf_weights.size; k_weights++) {
+            //for (int k_endpoints = 0; k_endpoints < mtf_endpoints.size; k_endpoints++) {
+        for (int k_weights = 0; k_weights < min(weights_search_size, mtf_weights.size); k_weights++) {
+			int128_t candidate_weights = mtf_weights.list[k_weights];
+			int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
+			int weights_weight_bits = weight_bits[weights_mode];
+			if(weights_weight_bits != WEIGHT_BITS) {
+				continue;
+			}
+
+            for (int k_endpoints = 0; k_endpoints < min(endpoints_search_size, mtf_endpoints.size); k_endpoints++) {
                 int128_t candidate_endpoints = mtf_endpoints.list[k_endpoints];
-                
+                int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+                int endpoints_weight_bits = weight_bits[endpoints_mode];
+                if(endpoints_weight_bits < WEIGHT_BITS) {
+                    continue;
+                }
+
                 uint8_t temp_block[16];
                 memcpy(temp_block, current_block, 16);
                 int128_t* temp_bits = (int128_t*)temp_block;
@@ -1129,7 +1159,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
-    //dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
 
     // Clean up
     free(bsd);
