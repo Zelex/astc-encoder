@@ -123,6 +123,7 @@ static const float CORNER_WEIGHT = 1.0f;
 static const float VARIANCE_THRESHOLD = 0.001f;
 static const float SIGMOID_CENTER = 0.1f;
 static const float SIGMOID_STEEPNESS = 20.0f;
+static const float SSIM_SCALE = 1000.0f;
 
 #define ERROR_FN calculate_mse
 
@@ -251,7 +252,7 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 }
 
 template<typename T>
-static inline float calculate_mse(const T* img1, const T* img2, const float* gradients, int total) {
+static inline float calculate_mse(const T* img1, const T* img2, int total) {
     float sum = 0.0;
     const float weights[4] = {0.299f, 0.587f, 0.114f, 1.0f}; // R, G, B, A weights
     for (int i = 0; i < total; i += 4) {
@@ -261,6 +262,56 @@ static inline float calculate_mse(const T* img1, const T* img2, const float* gra
         }
     }
     return sum / (total / 4);
+}
+
+template<typename T>
+static inline float calculate_ssim(const T* x, const T* y, int n) {
+    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
+    const double C1 = 0.01 * 0.01;
+    const double C2 = 0.03 * 0.03;
+
+    for (int i = 0; i < n; i++) {
+        sum_x += x[i];
+        sum_y += y[i];
+        sum_x2 += x[i] * x[i];
+        sum_y2 += y[i] * y[i];
+        sum_xy += x[i] * y[i];
+    }
+
+    double mean_x = sum_x / n;
+    double mean_y = sum_y / n;
+    double var_x = (sum_x2 / n) - (mean_x * mean_x);
+    double var_y = (sum_y2 / n) - (mean_y * mean_y);
+    double cov_xy = (sum_xy / n) - (mean_x * mean_y);
+
+    double numerator = (2 * mean_x * mean_y + C1) * (2 * cov_xy + C2);
+    double denominator = (mean_x * mean_x + mean_y * mean_y + C1) * (var_x + var_y + C2);
+    return (float)(numerator / denominator);
+}
+
+// https://ece.uwaterloo.ca/~z70wang/publications/TIP_SSIM_MathProperties.pdf
+template<typename T>
+static inline float calculate_ssim2(const T* x, const T* y, int n) {
+    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0;
+    const double C1 = 0.01 * 0.01;
+    const double C2 = 0.03 * 0.03;
+
+    for (int i = 0; i < n; i++) {
+        sum_x += x[i];
+        sum_y += y[i];
+        sum_x2 += x[i] * x[i];
+        sum_y2 += y[i] * y[i];
+    }
+
+    double mean_x = sum_x / n;
+    double mean_y = sum_y / n;
+    double var_x = (sum_x2 - n * mean_x * mean_x) / (n - 1);
+    double var_y = (sum_y2 - n * mean_y * mean_y) / (n - 1);
+
+    double d_luminance = 1 - (2 * mean_x * mean_y + C1) / (mean_x * mean_x + mean_y * mean_y + C1);
+    double d_contrast = 1 - (2 * sqrt(var_x) * sqrt(var_y) + C2) / (var_x + var_y + C2);
+
+    return sqrtf((float)(d_luminance + d_contrast));
 }
 
 static void astc_decompress_block(
@@ -782,11 +833,10 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
-        float *gradients = all_gradients + block_index * block_width * block_height * block_depth;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
         } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
         }
 
         float adjusted_lambda = is_weights_search ? block_info[block_index].adjusted_lambda_weights : block_info[block_index].adjusted_lambda_endpoints;
@@ -819,9 +869,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
             float mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
+                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
             } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
+                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
 
             float modified_bit_cost = calculate_bit_cost(k, candidate_bits, &mtf, WEIGHTS_MASK);
@@ -969,11 +1019,10 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
-        float *gradients = all_gradients + block_index * block_width * block_height * block_depth;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
         } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
         }
 
         float adjusted_lambda_weights = block_info[block_index].adjusted_lambda_weights;
@@ -1015,9 +1064,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
                 float mse;
                 if (block_type == ASTCENC_TYPE_U8) {
-                    mse = ERROR_FN(original_decoded, modified_decoded, gradients, block_width*block_height*block_depth*4);
+                    mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
                 } else {
-                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, gradients, block_width*block_height*block_depth*4);
+                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
                 float modified_bit_cost_weights = calculate_bit_cost(k_weights, candidate_weights, &mtf_weights, weights_mask);
