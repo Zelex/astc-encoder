@@ -113,7 +113,8 @@
     #error "No 128-bit integer type available for this platform"
 #endif
 
-#define MAX_MTF_SIZE (256+64+16+1)
+//#define MAX_MTF_SIZE (256+64+16+1)
+#define MAX_MTF_SIZE (1024+256+64+16+1)
 
 static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 3.0f;
@@ -845,8 +846,10 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Note: slightly better to do backwards first. due to tie breakers, you want the forward pass to always win.
 
+    int mtf_size = MAX_MTF_SIZE;
+
     // Morton order pass
-    mtf_ll_init(&mtf, 256+64+16+1);
+    mtf_ll_init(&mtf, mtf_size);
     if(block_depth > 1) {
         for (int z = 0; z < blocks_z; z++) {
             for (int y = 0; y < blocks_y; y++) {
@@ -872,13 +875,13 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     }
 
     // Backward pass
-    mtf_ll_init(&mtf, 256+64+16+1);
+    mtf_ll_init(&mtf, mtf_size);
     for (size_t i = num_blocks; i-- > 0;) {
         process_block(i);
     }
 
     // Forward pass
-    mtf_ll_init(&mtf, 256+64+16+1);
+    mtf_ll_init(&mtf, mtf_size);
     for (size_t i = 0; i < num_blocks; i++) {
         process_block(i);
     }
@@ -1037,7 +1040,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         mtf_ll_encode(&mtf_endpoints, best_match, endpoints_mask);
     };
 
-    int mtf_size = 256+64+16+1;
+    int mtf_size = MAX_MTF_SIZE;
 
     // Morton order pass
     mtf_ll_init(&mtf_weights, mtf_size);
