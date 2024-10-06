@@ -120,10 +120,8 @@ static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 3.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
-static const float VARIANCE_THRESHOLD = 0.001f;
 static const float SIGMOID_CENTER = 0.1f;
 static const float SIGMOID_STEEPNESS = 20.0f;
-static const float SSIM_SCALE = 1000.0f;
 
 #define ERROR_FN calculate_mse
 
@@ -310,7 +308,7 @@ static inline float calculate_ssim(const T* x, const T* y, int n) {
 // https://ece.uwaterloo.ca/~z70wang/publications/TIP_SSIM_MathProperties.pdf
 template<typename T>
 static inline float calculate_ssim2(const T* x, const T* y, int n) {
-    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0;
+    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;// , sum_sq = 0;
     const double C1 = 0.01 * 0.01;
     const double C2 = 0.03 * 0.03;
 
@@ -319,17 +317,25 @@ static inline float calculate_ssim2(const T* x, const T* y, int n) {
         sum_y += y[i];
         sum_x2 += x[i] * x[i];
         sum_y2 += y[i] * y[i];
+        sum_xy += x[i] * y[i];
+        //sum_sq += (x[i] - y[i]) * (x[i] - y[i]);
     }
 
     double mean_x = sum_x / n;
     double mean_y = sum_y / n;
-    double var_x = (sum_x2 - n * mean_x * mean_x) / (n - 1);
-    double var_y = (sum_y2 - n * mean_y * mean_y) / (n - 1);
+    double var_x = (sum_x2 / n) - (mean_x * mean_x);
+    double var_y = (sum_y2 / n) - (mean_y * mean_y);
+    double cov_xy = (sum_xy / n) - (mean_x * mean_y);
+    //double mse = sum_sq / n;
 
-    double d_luminance = 1 - (2 * mean_x * mean_y + C1) / (mean_x * mean_x + mean_y * mean_y + C1);
-    double d_contrast = 1 - (2 * sqrt(var_x) * sqrt(var_y) + C2) / (var_x + var_y + C2);
+    double l = (2 * mean_x * mean_y + C1) / (mean_x * mean_x + mean_y * mean_y + C1);
+    double c = (2 * sqrt(var_x * var_y) + C2) / (var_x + var_y + C2);
+    double s = (cov_xy + C2 / 2) / (sqrt(var_x * var_y) + C2 / 2);
 
-    return sqrtf((float)(d_luminance + d_contrast));
+    double d1 = 1 - l;
+    double d2 = 1 - c * s;
+
+    return sqrtf((float)(d1 + d2));// *sqrtf((float)mse);
 }
 
 static void astc_decompress_block(
