@@ -308,9 +308,10 @@ static inline float calculate_ssim(const T* x, const T* y, int n) {
 // https://ece.uwaterloo.ca/~z70wang/publications/TIP_SSIM_MathProperties.pdf
 template<typename T>
 static inline float calculate_ssim2(const T* x, const T* y, int n) {
-    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;// , sum_sq = 0;
-    const double C1 = 0.01 * 0.01;
-    const double C2 = 0.03 * 0.03;
+    double sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
+    const double C1 = 0.01 * 0.01;  // For pixel values in [0,1]
+    const double C2 = 0.03 * 0.03;  // For pixel values in [0,1]
+    const double epsilon = DBL_EPSILON;
 
     for (int i = 0; i < n; i++) {
         sum_x += x[i];
@@ -318,22 +319,40 @@ static inline float calculate_ssim2(const T* x, const T* y, int n) {
         sum_x2 += x[i] * x[i];
         sum_y2 += y[i] * y[i];
         sum_xy += x[i] * y[i];
-        //sum_sq += (x[i] - y[i]) * (x[i] - y[i]);
     }
 
     double mean_x = sum_x / n;
     double mean_y = sum_y / n;
-    double var_x = (sum_x2 / n) - (mean_x * mean_x);
-    double var_y = (sum_y2 / n) - (mean_y * mean_y);
-    double cov_xy = (sum_xy / n) - (mean_x * mean_y);
-    //double mse = sum_sq / n;
 
+    // Use two-pass algorithm for improved numerical stability in variance calculation
+    double var_x = 0, var_y = 0, cov_xy = 0;
+    for (int i = 0; i < n; i++) {
+        double dx = x[i] - mean_x;
+        double dy = y[i] - mean_y;
+        var_x += dx * dx;
+        var_y += dy * dy;
+        cov_xy += dx * dy;
+    }
+    var_x /= (n - 1);
+    var_y /= (n - 1);
+    cov_xy /= (n - 1);
+
+    // Avoid division by zero
     double l = (2 * mean_x * mean_y + C1) / (mean_x * mean_x + mean_y * mean_y + C1);
-    double c = (2 * sqrt(var_x * var_y) + C2) / (var_x + var_y + C2);
-    double s = (cov_xy + C2 / 2) / (sqrt(var_x * var_y) + C2 / 2);
+    
+    double std_x = sqrt(var_x);
+    double std_y = sqrt(var_y);
+    double c = (2 * std_x * std_y + C2) / (var_x + var_y + C2);
+    
+    double s;
+    if (std_x * std_y < epsilon) {
+        s = 1.0;  // If both standard deviations are very close to zero, assume perfect structural similarity
+    } else {
+        s = (cov_xy + C2/2) / (std_x * std_y + C2/2);
+    }
 
-    double d1 = 1 - l;
-    double d2 = 1 - c * s;
+    double d1 = fmax(0, fmin(1, 1 - l));  // Clamp to [0, 1]
+    double d2 = fmax(0, fmin(1, 1 - c * s));  // Clamp to [0, 1]
 
     return sqrtf((float)(d1 + d2));// *sqrtf((float)mse);
 }
@@ -1192,6 +1211,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     int mtf_size = MAX_MTF_SIZE;
 
     // Morton order pass
+    #if 0
     mtf_ll_init(&mtf_weights, mtf_size);
     mtf_ll_init(&mtf_endpoints, mtf_size);
     if(block_depth > 1) {
@@ -1217,6 +1237,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             }
         }
     }
+    #endif
 
     // Backward pass
     mtf_ll_init(&mtf_weights, mtf_size);
@@ -1295,21 +1316,68 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     
     // Process and recalculate each block
-    /* // TODO: this produces worse results! Check kodim03
-    for (size_t i = 0; i < num_blocks; i++) {
-        uint8_t* block_ptr = data + i * block_size;
-        const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
-        process_and_recalculate_astc_block(*bsd, block_ptr, block_width, block_height, block_depth, block_type, original_decoded);
-    }
-    //*/
 
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+    for (int iter = 0; iter < 2; ++iter) {
+        dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+
+#if 0
+        // Allocate temporary memory for decompressed data
+        uint8_t* temp_decompressed = (uint8_t*)malloc(6 * 6 * 6 * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+
+        // Process and recalculate each block
+        for (size_t i = 0; i < num_blocks; i++) {
+            uint8_t* block_ptr = data + i * 16;  // Assuming block_size == 16
+            const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
+
+            // Use stack allocation for the temporary block
+            uint8_t temp_block[16];
+
+            // Copy the original block to temp memory
+            memcpy(temp_block, block_ptr, 16);
+
+            // Decode the original block
+            astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
+
+            // Calculate original MSE
+            float original_mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+                original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+            }
+            else {
+                original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
+            }
+
+            // Process and recalculate the block
+            process_and_recalculate_astc_block(*bsd, temp_block, block_width, block_height, block_depth, block_type, original_decoded);
+
+            // Decode the modified block
+            astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
+
+            // Calculate new MSE
+            float new_mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+                new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+            }
+            else {
+                new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
+            }
+
+            // Only accept the changes if the new MSE is better (lower) than the original
+            if (new_mse < original_mse) {
+                // Copy the improved block back to the main data
+                memcpy(block_ptr, temp_block, 16);
+            }
+        }
+
+        // Free temporary memory
+        free(temp_decompressed);
+#endif
+    }
 
     // Clean up
     free(bsd);
