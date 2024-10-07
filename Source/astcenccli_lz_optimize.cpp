@@ -243,7 +243,7 @@ static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
 static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
     if (mtf_value == mtf->size) {
-        return 8.f + histo_cost(&mtf->histogram, literal_value, mask);
+        return 1.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
@@ -1265,7 +1265,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to [0.5, 1.5]
     float lambda_10 = 0.5f;
-    float lambda_40 = 1.25f;
+    float lambda_40 = 1.5f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
