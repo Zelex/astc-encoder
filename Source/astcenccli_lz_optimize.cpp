@@ -1054,34 +1054,112 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
                                             adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
 
-        int weights_search_size = 16;
-        int endpoints_search_size = 16;
+        struct Candidate {
+            int128_t bits;
+            float rd_cost;
+            float bit_cost;
+        };
+        Candidate best_weights[16];
+        Candidate best_endpoints[16];
+        int weights_count = 0;
+        int endpoints_count = 0;
+        const int best_candidates_count = 16;
 
-        // Search through both MTF lists
-        //for (int k_weights = 0; k_weights < mtf_weights.size; k_weights++) {
-            //for (int k_endpoints = 0; k_endpoints < mtf_endpoints.size; k_endpoints++) {
-        for (int k_weights = 0; k_weights < min(weights_search_size, mtf_weights.size); k_weights++) {
-			int128_t candidate_weights = mtf_weights.list[k_weights];
-			int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
-			int weights_weight_bits = weight_bits[weights_mode];
-			if(weights_weight_bits != WEIGHT_BITS) {
-				continue;
-			}
+        // Find best weight candidates
+        for (int k = 0; k < mtf_weights.size; k++) {
+            int128_t candidate_weights = mtf_weights.list[k];
+            int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
+            int weights_weight_bits = weight_bits[weights_mode];
+            if (weights_weight_bits != WEIGHT_BITS) {
+                continue;
+            }
 
-            for (int k_endpoints = 0; k_endpoints < min(endpoints_search_size, mtf_endpoints.size); k_endpoints++) {
-                int128_t candidate_endpoints = mtf_endpoints.list[k_endpoints];
-                int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-                int endpoints_weight_bits = weight_bits[endpoints_mode];
-                if(endpoints_weight_bits < WEIGHT_BITS) {
-                    continue;
+            uint8_t temp_block[16];
+            memcpy(temp_block, current_block, 16);
+            int128_t* temp_bits = (int128_t*)temp_block;
+            *temp_bits = bitwise_or(
+                bitwise_and(candidate_weights, weights_mask),
+                bitwise_and(current_bits, endpoints_mask)
+            );
+
+            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+            float mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            } else {
+                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            }
+
+            float bit_cost = adjusted_lambda_weights * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
+            float rd_cost = mse + bit_cost;
+
+            // Insert into best_weights if it's one of the best candidates
+            if (weights_count < best_candidates_count) {
+                best_weights[weights_count++] = {candidate_weights, rd_cost};
+            } else if (rd_cost < best_weights[best_candidates_count - 1].rd_cost) {
+                // Find the position to insert
+                int insert_pos = best_candidates_count - 1;
+                while (insert_pos > 0 && rd_cost < best_weights[insert_pos - 1].rd_cost) {
+                    best_weights[insert_pos] = best_weights[insert_pos - 1];
+                    insert_pos--;
                 }
+                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost};
+            }
+        }
 
+        // Find best endpoint candidates
+        for (int k = 0; k < mtf_endpoints.size; k++) {
+            int128_t candidate_endpoints = mtf_endpoints.list[k];
+            int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+            int endpoints_weight_bits = weight_bits[endpoints_mode];
+            if (endpoints_weight_bits < WEIGHT_BITS) {
+                continue;
+            }
+
+            uint8_t temp_block[16];
+            memcpy(temp_block, current_block, 16);
+            int128_t* temp_bits = (int128_t*)temp_block;
+            *temp_bits = bitwise_or(
+                bitwise_and(current_bits, weights_mask),
+                bitwise_and(candidate_endpoints, endpoints_mask)
+            );
+
+            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+            float mse;
+            if (block_type == ASTCENC_TYPE_U8) {
+                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            } else {
+                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            }
+
+            float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
+            float rd_cost = mse + bit_cost;
+
+            // Insert into best_endpoints if it's one of the best candidates
+            if (endpoints_count < best_candidates_count) {
+                best_endpoints[endpoints_count++] = {candidate_endpoints, rd_cost};
+            } else if (rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
+                // Find the position to insert
+                int insert_pos = best_candidates_count - 1;
+                while (insert_pos > 0 && rd_cost < best_endpoints[insert_pos - 1].rd_cost) {
+                    best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
+                    insert_pos--;
+                }
+                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost};
+            }
+        }
+
+        // Search through combinations of best candidates
+        for (int i = 0; i < weights_count; i++) {
+            for (int j = 0; j < endpoints_count; j++) {
                 uint8_t temp_block[16];
                 memcpy(temp_block, current_block, 16);
                 int128_t* temp_bits = (int128_t*)temp_block;
                 *temp_bits = bitwise_or(
-                    bitwise_and(candidate_weights, weights_mask),
-                    bitwise_and(candidate_endpoints, endpoints_mask)
+                    bitwise_and(best_weights[i].bits, weights_mask),
+                    bitwise_and(best_endpoints[j].bits, endpoints_mask)
                 );
 
                 astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -1093,9 +1171,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                float modified_bit_cost_weights = calculate_bit_cost(k_weights, candidate_weights, &mtf_weights, weights_mask);
-                float modified_bit_cost_endpoints = calculate_bit_cost(k_endpoints, candidate_endpoints, &mtf_endpoints, endpoints_mask);
-                float rd_cost = mse + adjusted_lambda_weights * modified_bit_cost_weights + adjusted_lambda_endpoints * modified_bit_cost_endpoints;
+                float rd_cost = mse + best_weights[i].bit_cost + best_endpoints[j].bit_cost;
 
                 if (rd_cost < best_rd_cost) {
                     best_match = *temp_bits;
@@ -1215,8 +1291,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     //print_adjusted_lambda_ascii(block_info, 768/block_width, 512/block_height);
 
-    // MTF passes...
-    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
+
+    //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     
     // Process and recalculate each block
     /* // TODO: this produces worse results! Check kodim03
@@ -1227,14 +1303,12 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     }
     //*/
 
-    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
-
-    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
-    mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+    //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
     dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
 
     // Clean up
