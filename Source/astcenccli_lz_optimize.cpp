@@ -1244,7 +1244,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to [0.5, 1.5]
     float lambda_10 = 0.5f;
-    float lambda_40 = 1.5f;
+    float lambda_40 = 1.25f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
