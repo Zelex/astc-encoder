@@ -409,7 +409,8 @@ void process_and_recalculate_astc_block(
     int block_height,
     int block_depth,
     int block_type,
-    const uint8_t* original_decoded)
+    const uint8_t* original_decoded,
+    const uint8_t* original_block_ptr)
 {
     // Extract block information
     symbolic_compressed_block scb;
@@ -473,6 +474,10 @@ void process_and_recalculate_astc_block(
     // Set channel weights (assuming equal weights for simplicity)
     blk.channel_weight = vfloat4(1.0f);
 
+    // Extract endpoints from the original block
+    symbolic_compressed_block original_scb;
+    physical_to_symbolic(bsd, original_block_ptr, original_scb);
+
     for (unsigned int i = 0; i < scb.partition_count; i++) {
         vint4 color0, color1;
         bool rgb_hdr, alpha_hdr;
@@ -482,8 +487,8 @@ void process_and_recalculate_astc_block(
 
         unpack_color_endpoints(
             decode_mode,
-            scb.color_formats[i],
-            scb.color_values[i],
+            original_scb.color_formats[i],
+            original_scb.color_values[i],
             rgb_hdr,
             alpha_hdr,
             color0,
@@ -1324,6 +1329,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     uint8_t *all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
     float *all_gradients = (float*)malloc(num_blocks * block_width * block_height * block_depth * sizeof(float));
 
+    // Preserve original blocks
+    uint8_t *original_blocks = (uint8_t*)malloc(data_len);
+    memcpy(original_blocks, data, data_len);
+
     for (size_t i = 0; i < num_blocks; i++) {
         uint8_t *original_block = data + i * block_size;
         uint8_t *decoded_block = all_original_decoded + i * decoded_block_size;
@@ -1367,65 +1376,66 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
 
-    for (int iter = 0; iter < 1; ++iter) {
-        dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
 
 #if 0
-        // Allocate temporary memory for decompressed data
-        uint8_t* temp_decompressed = (uint8_t*)malloc(6 * 6 * 6 * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+    // Allocate temporary memory for decompressed data
+    uint8_t* temp_decompressed = (uint8_t*)malloc(6 * 6 * 6 * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
-        // Process and recalculate each block
-        for (size_t i = 0; i < num_blocks; i++) {
-            uint8_t* block_ptr = data + i * 16;  // Assuming block_size == 16
-            const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
+    // Process and recalculate each block
+    for (size_t i = 0; i < num_blocks; i++) {
+        uint8_t* block_ptr = data + i * 16;  
+        const uint8_t* original_block_ptr = original_blocks + i * 16;
+        const uint8_t* original_decoded = all_original_decoded + i * decoded_block_size;
 
-            // Use stack allocation for the temporary block
-            uint8_t temp_block[16];
+        // Use stack allocation for the temporary block
+        uint8_t temp_block[16];
 
-            // Copy the original block to temp memory
-            memcpy(temp_block, block_ptr, 16);
+        // Copy the original block to temp memory
+        memcpy(temp_block, block_ptr, 16);
 
-            // Decode the original block
-            astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
+        // Decode the original block
+        astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
 
-            // Calculate original MSE
-            float original_mse;
-            if (block_type == ASTCENC_TYPE_U8) {
-                original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
-            }
-            else {
-                original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
-            }
-
-            // Process and recalculate the block
-            process_and_recalculate_astc_block(*bsd, temp_block, block_width, block_height, block_depth, block_type, original_decoded);
-
-            // Decode the modified block
-            astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
-
-            // Calculate new MSE
-            float new_mse;
-            if (block_type == ASTCENC_TYPE_U8) {
-                new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
-            }
-            else {
-                new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
-            }
-
-            // Only accept the changes if the new MSE is better (lower) than the original
-            if (new_mse < original_mse) {
-                // Copy the improved block back to the main data
-                memcpy(block_ptr, temp_block, 16);
-            }
+        // Calculate original MSE
+        float original_mse;
+        if (block_type == ASTCENC_TYPE_U8) {
+            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+        }
+        else {
+            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
         }
 
-        // Free temporary memory
-        free(temp_decompressed);
-#endif
+        // Process and recalculate the block
+        process_and_recalculate_astc_block(*bsd, temp_block, block_width, block_height, block_depth, block_type, original_decoded, original_block_ptr);
+
+        // Decode the modified block
+        astc_decompress_block(*bsd, temp_block, temp_decompressed, block_width, block_height, block_depth, block_type);
+
+        // Calculate new MSE
+        float new_mse;
+        if (block_type == ASTCENC_TYPE_U8) {
+            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+        }
+        else {
+            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
+        }
+
+        // Only accept the changes if the new MSE is better (lower) than the original
+        if (new_mse < original_mse) {
+            // Copy the improved block back to the main data
+            memcpy(block_ptr, temp_block, 16);
+        }
     }
+
+    // Free temporary memory
+    free(temp_decompressed);
+#endif
 
     // Clean up
     free(bsd);
     free(all_original_decoded);
     free(all_gradients);
+    free(original_blocks);
 }
