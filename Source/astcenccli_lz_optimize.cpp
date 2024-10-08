@@ -228,10 +228,6 @@ static int mtf_ll_encode(MTF_LL* mtf, int128_t value, int128_t mask) {
     return pos;
 }
 
-static bool mtf_ll_contains(MTF_LL* mtf, int128_t value, int128_t mask) {
-    return mtf_ll_search(mtf, value, mask) != -1;
-}
-
 static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
     int pos = mtf_ll_search(mtf, value, mask);
     if (pos != -1) {
@@ -1098,6 +1094,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             int128_t bits;
             float rd_cost;
             float bit_cost;
+            int mtf_position;
         };
         Candidate best_weights[16];
         Candidate best_endpoints[16];
@@ -1146,7 +1143,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
                     insert_pos--;
                 }
-                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost};
+                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost, k};
             }
         }
 
@@ -1196,7 +1193,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_weights[insert_pos] = best_weights[insert_pos - 1];
                     insert_pos--;
                 }
-                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost};
+                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost, k};
             }
         }
 
@@ -1227,8 +1224,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, *temp_bits, weights_mask), *temp_bits, &mtf_weights, weights_mask) +
-                                      adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, *temp_bits, endpoints_mask), *temp_bits, &mtf_endpoints, endpoints_mask);
+                float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                      adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
 
                 if (rd_cost < best_rd_cost) {
                     best_match = *temp_bits;
@@ -1257,8 +1254,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, *temp_bits, weights_mask), *temp_bits, &mtf_weights, weights_mask) +
-                                adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, *temp_bits, endpoints_mask), *temp_bits, &mtf_endpoints, endpoints_mask);
+                rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+
                 if (rd_cost < best_rd_cost) {
                     best_match = *temp_bits;
                     best_rd_cost = rd_cost;
