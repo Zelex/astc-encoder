@@ -11,15 +11,15 @@
     typedef __m128i int128_t;
 
     // Helper functions for MSVC
-    static inline uint8_t get_byte(const int128_t& value, int index) {
+    static __forceinline uint8_t get_byte(const int128_t& value, int index) {
         return ((uint8_t*)&value)[index];
     }
 
-    static inline uint64_t get_uint64(const int128_t& value, int index) {
+    static __forceinline uint64_t get_uint64(const int128_t& value, int index) {
         return ((uint64_t*)&value)[index];
     }
 
-    static inline int128_t shift_left(const int128_t value, int shift) {
+    static __forceinline int128_t shift_left(const int128_t value, int shift) {
         if (shift >= 128) {
             return _mm_setzero_si128();
         } else if (shift == 0) {
@@ -38,23 +38,23 @@
         }
     }
 
-    static inline int128_t bitwise_and(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t bitwise_and(const int128_t& a, const int128_t& b) {
         return _mm_and_si128(a, b);
     }
 
-    static inline int128_t bitwise_or(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t bitwise_or(const int128_t& a, const int128_t& b) {
         return _mm_or_si128(a, b);
     }
 
-    static inline bool is_equal(const int128_t& a, const int128_t& b) {
+    static __forceinline bool is_equal(const int128_t& a, const int128_t& b) {
         return _mm_movemask_epi8(_mm_cmpeq_epi8(a, b)) == 0xFFFF;
     }
 
-    static inline int128_t create_from_int(long long value) {
+    static __forceinline int128_t create_from_int(long long value) {
         return _mm_set_epi64x(0, value);
     }
 
-    static inline int128_t subtract(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t subtract(const int128_t& a, const int128_t& b) {
         __m128i borrow = _mm_setzero_si128();
         __m128i result = _mm_sub_epi64(a, b);
         borrow = _mm_srli_epi64(_mm_cmpgt_epi64(b, a), 63);
@@ -63,11 +63,11 @@
         return _mm_or_si128(result, _mm_slli_si128(high_result, 8));
     }
 
-    static inline int128_t bitwise_not(const int128_t& a) {
+    static __forceinline int128_t bitwise_not(const int128_t& a) {
         return _mm_xor_si128(a, _mm_set1_epi32(-1));
     }
 
-    static inline char *to_string(const int128_t& value) {
+    static __forceinline char *to_string(const int128_t& value) {
         static char buffer[257] = { 0 };
         sprintf(buffer, "%016llx%016llx", get_uint64(value, 1), get_uint64(value, 0));
         return buffer;
@@ -77,35 +77,35 @@
     typedef __int128 int128_t;
 
     // Helper functions for GCC
-    static inline uint8_t get_byte(const int128_t& value, int index) {
+    static __forceinline uint8_t get_byte(const int128_t& value, int index) {
         return (value >> (index * 8)) & 0xFF;
     }
 
-    static inline int128_t shift_left(const int128_t& value, int shift) {
+    static __forceinline int128_t shift_left(const int128_t& value, int shift) {
         return value << shift;
     }
 
-    static inline int128_t bitwise_and(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t bitwise_and(const int128_t& a, const int128_t& b) {
         return a & b;
     }
 
-    static inline int128_t bitwise_or(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t bitwise_or(const int128_t& a, const int128_t& b) {
         return a | b;
     }
 
-    static inline bool is_equal(const int128_t& a, const int128_t& b) {
+    static __forceinline bool is_equal(const int128_t& a, const int128_t& b) {
         return a == b;
     }
 
-    static inline int128_t create_from_int(long long value) {
+    static __forceinline int128_t create_from_int(long long value) {
         return (int128_t)value;
     }
 
-    static inline int128_t subtract(const int128_t& a, const int128_t& b) {
+    static __forceinline int128_t subtract(const int128_t& a, const int128_t& b) {
         return a - b;
     }
 
-    static inline int128_t bitwise_not(const int128_t& a) {
+    static __forceinline int128_t bitwise_not(const int128_t& a) {
         return ~a;
     }
 
