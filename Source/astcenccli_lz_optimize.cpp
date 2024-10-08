@@ -240,6 +240,29 @@ static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
+#if 0
+static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
+    literal_value = bitwise_and(literal_value, mask);
+    if (mtf_value == mtf->size) {
+        // New symbol, use entropy coding cost
+        return histo_cost(&mtf->histogram, literal_value, mask);
+    } else {
+        // MTF value, use a more accurate bit cost estimation
+        if (mtf_value == 0) {
+            return 1.0f; // Most frequent symbol, typically 1 bit
+        } else if (mtf_value < 2) {
+            return 2.0f; // Next most frequent, typically 2 bits
+        } else if (mtf_value < 4) {
+            return 3.0f; // Next 2, typically 3 bits
+        } else if (mtf_value < 8) {
+            return 4.0f; // Next 4, typically 4 bits
+        } else {
+            // For larger MTF values, use a logarithmic scale
+            return log2_fast((float)(mtf_value + 1)) + 1.0f;
+        }
+    }
+}
+#else
 static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
     if (mtf_value == mtf->size) {
@@ -248,6 +271,7 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
 }
+#endif
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, int total) {
@@ -260,6 +284,19 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
         }
     }
     return sum / (total / 4);
+}
+
+template<typename T>
+static inline float calculate_rmse(const T* img1, const T* img2, int total) {
+    float sum = 0.0;
+    const float weights[4] = {0.299f, 0.587f, 0.114f, 1.0f}; // R, G, B, A weights
+    for (int i = 0; i < total; i += 4) {
+        for (int c = 0; c < 4; c++) {
+            float diff = (float)img1[i + c] - (float)img2[i + c];
+            sum += weights[c] * diff * diff;
+        }
+    }
+    return sqrtf(sum / (total / 4));
 }
 
 template<typename T>
@@ -1051,10 +1088,13 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         int128_t current_bits = *((int128_t*)current_block);
         int128_t best_match = current_bits;
 
-        
         int mode = ((uint16_t*)current_block)[0] & 0x7ff;
         int WEIGHT_BITS = weight_bits[mode];
         if (WEIGHT_BITS == 0) {
+            histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
+            histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
+            mtf_ll_encode(&mtf_weights, best_match, create_from_int(0));
+            mtf_ll_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
             return; // Constant color block, skip
         }
 
@@ -1186,7 +1226,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
         // Search through combinations of best candidates
         for (int i = 0; i < weights_count; i++) {
-
             for (int j = 0; j < endpoints_count; j++) {
                 int128_t candidate_endpoints = best_endpoints[j].bits;
                 int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
