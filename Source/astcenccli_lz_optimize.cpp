@@ -240,29 +240,6 @@ static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-#if 0
-static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
-    literal_value = bitwise_and(literal_value, mask);
-    if (mtf_value == mtf->size) {
-        // New symbol, use entropy coding cost
-        return histo_cost(&mtf->histogram, literal_value, mask);
-    } else {
-        // MTF value, use a more accurate bit cost estimation
-        if (mtf_value == 0) {
-            return 1.0f; // Most frequent symbol, typically 1 bit
-        } else if (mtf_value < 2) {
-            return 2.0f; // Next most frequent, typically 2 bits
-        } else if (mtf_value < 4) {
-            return 3.0f; // Next 2, typically 3 bits
-        } else if (mtf_value < 8) {
-            return 4.0f; // Next 4, typically 4 bits
-        } else {
-            // For larger MTF values, use a logarithmic scale
-            return log2_fast((float)(mtf_value + 1)) + 1.0f;
-        }
-    }
-}
-#else
 static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
     if (mtf_value == mtf->size) {
@@ -271,7 +248,6 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
 }
-#endif
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, int total) {
@@ -1251,7 +1227,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                float rd_cost = mse + best_weights[i].bit_cost + best_endpoints[j].bit_cost;
+                float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, *temp_bits, weights_mask), *temp_bits, &mtf_weights, weights_mask) +
+                                      adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, *temp_bits, endpoints_mask), *temp_bits, &mtf_endpoints, endpoints_mask);
 
                 if (rd_cost < best_rd_cost) {
                     best_match = *temp_bits;
@@ -1280,7 +1257,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                rd_cost = mse + best_weights[i].bit_cost + best_endpoints[j].bit_cost;
+                rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, *temp_bits, weights_mask), *temp_bits, &mtf_weights, weights_mask) +
+                                adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, *temp_bits, endpoints_mask), *temp_bits, &mtf_endpoints, endpoints_mask);
                 if (rd_cost < best_rd_cost) {
                     best_match = *temp_bits;
                     best_rd_cost = rd_cost;
