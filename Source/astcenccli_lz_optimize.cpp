@@ -194,20 +194,21 @@ static inline void histo_update(histo_t *h, int128_t value, int128_t mask) {
 
 static float histo_cost(histo_t *h, int128_t value, int128_t mask) {
     float tlb = (float)h->size;
-    int c[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float cost = 1.0f;
+    int count = 0;
+
     for (int i = 0; i < 16; i++) {
         if (get_byte(mask, i)) {
-            c[i] = h->h[get_byte(value, i)] + 1;
+            int c = h->h[get_byte(value, i)] + 1;
             tlb += 1;
+            if (c > 0) {
+                cost *= tlb / c;
+                count++;
+            }
         }
     }
-    float cost = 0;
-    for (int i = 0; i < 16; i++) {
-        if (c[i] > 0) {
-            cost += log2_fast(tlb / c[i]);
-        }
-    }
-    return cost;
+
+    return count > 0 ? log2_fast(cost) : 0.0f;
 }
 
 static void mtf_ll_init(MTF_LL* mtf, int max_size) {
@@ -1198,7 +1199,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         struct Candidate {
             int128_t bits;
             float rd_cost;
-            float bit_cost;
             int mtf_position;
         };
         const int best_candidates_count = 16;
@@ -1229,7 +1229,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
                     insert_pos--;
                 }
-                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost, k};
+                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, k};
                 endpoints_count++;
             } else if (rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
                 // Find the position to insert
@@ -1238,7 +1238,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
                     insert_pos--;
                 }
-                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost, k};
+                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, k};
             }
         }
 
@@ -1286,7 +1286,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_weights[insert_pos] = best_weights[insert_pos - 1];
                     insert_pos--;
                 }
-                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost, k};
+                best_weights[insert_pos] = {candidate_weights, rd_cost, k};
                 weights_count++;
             } else if (rd_cost < best_weights[best_candidates_count - 1].rd_cost) {
                 // Find the position to insert
@@ -1295,7 +1295,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     best_weights[insert_pos] = best_weights[insert_pos - 1];
                     insert_pos--;
                 }
-                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost, k};
+                best_weights[insert_pos] = {candidate_weights, rd_cost, k};
             }
         }
 
