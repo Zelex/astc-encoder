@@ -263,8 +263,8 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
     }
 }
 
-template<typename T>
-static inline float calculate_mse(const T* img1, const T* img2, int total) {
+template<typename T1, typename T2>
+static inline float calculate_mse(const T1* img1, const T2* img2, int total) {
 #ifdef __SSE__
     __m128 sum = _mm_setzero_ps();
     __m128 weights = _mm_set_ps(1.0f, 0.114f, 0.587f, 0.299f);
@@ -1422,6 +1422,211 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     free(weight_bits);
 }
 
+void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
+    //lambda /= 5.f;
+    const int block_size = 16;
+    size_t num_blocks = data_len / block_size;
+    const int max_palette = 128; 
+    int num_palette = 0;
+    const int pixels_per_block = block_width * block_height * block_depth * 4;
+
+    // Allocate memory for clusters
+    typedef struct {
+        int* block_indexes;
+        int num_blocks;
+        int capacity;
+        float block_average_pixels[6*6*6*4];
+        float last_used;
+    } cluster_t;
+
+    cluster_t* palette = (cluster_t*)malloc(max_palette * sizeof(cluster_t));
+    for (int i = 0; i < max_palette; i++) {
+        palette[i].block_indexes = (int*)malloc(16 * sizeof(int));  // Initial capacity
+        palette[i].num_blocks = 0;
+        palette[i].capacity = 16;
+        palette[i].last_used = 0;
+        memset(palette[i].block_average_pixels, 0, sizeof(palette[i].block_average_pixels));
+    }
+
+    // Prepare compression settings
+    astcenc_config config;
+    astcenc_context* context;
+    astcenc_error status = astcenc_config_init(ASTCENC_PRF_LDR, block_width, block_height, block_depth, ASTCENC_PRE_THOROUGH, 0, &config);
+    if (status != ASTCENC_SUCCESS) {
+        // Handle error
+        return;
+    }
+    status = astcenc_context_alloc(&config, 1, &context);
+    if (status != ASTCENC_SUCCESS) {
+        // Handle error
+        return;
+    }
+
+	compression_working_buffers *temp_buffers = (compression_working_buffers*)malloc(sizeof(compression_working_buffers));
+
+    float current_time = 0;
+
+    // For each block
+    for (int i = 0; i < num_blocks; ++i) {
+        float best_rd_cost = INFINITY;
+        int best_palette_index = -1;
+
+        const uint8_t* original_decoded = all_original_decoded + i * pixels_per_block * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
+
+        // Find the best palette entry for this block to add to.
+        for (int j = 0; j < num_palette; ++j) {
+            cluster_t* cluster = &palette[j];
+
+            // Speculatively add this block to the palette entry
+            float new_average[6*6*6*4];
+            for (int k = 0; k < pixels_per_block; k++) {
+                new_average[k] = (cluster->block_average_pixels[k] * cluster->num_blocks + original_decoded[k]) / (cluster->num_blocks + 1);
+            }
+
+            // Compute MSE for all blocks in this cluster
+            float total_mse = 0;
+            for (int k = 0; k < cluster->num_blocks; k++) {
+                int block_index = cluster->block_indexes[k];
+                uint8_t* original_block = all_original_decoded + block_index * pixels_per_block * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
+                
+                if (block_type == ASTCENC_TYPE_U8) {
+                    total_mse += ERROR_FN(original_block, new_average, pixels_per_block);
+                } else {
+                    total_mse += ERROR_FN((float*)original_block, new_average, pixels_per_block);
+                }
+            }
+
+            // Add MSE for the current block
+            if (block_type == ASTCENC_TYPE_U8) {
+                total_mse += ERROR_FN(original_decoded, new_average, pixels_per_block);
+            } else {
+                total_mse += ERROR_FN((float*)original_decoded, new_average, pixels_per_block);
+            }
+
+            // Calculate average MSE
+            float avg_mse = total_mse / (cluster->num_blocks + 1);
+
+            // Compute RD cost
+            float rd_cost = avg_mse + lambda * log2f(j + 1.f);  // Simple model for bit cost
+
+            // Update best if this is better
+            if (rd_cost < best_rd_cost) {
+                best_rd_cost = rd_cost;
+                best_palette_index = j;
+            }
+        }
+
+        // Consider adding a new palette entry
+        if (num_palette < max_palette) {
+            float new_entry_cost = lambda * log2f(num_palette + 2.f);  // Cost of adding a new entry
+            if (new_entry_cost < best_rd_cost) {
+                best_rd_cost = new_entry_cost;
+                best_palette_index = num_palette;
+                num_palette++;
+            }
+        } else {
+            // Find the least recently used palette entry
+            int lru_index = 0;
+            float oldest_time = palette[0].last_used;
+            for (int j = 1; j < max_palette; j++) {
+                if (palette[j].last_used < oldest_time) {
+                    oldest_time = palette[j].last_used;
+                    lru_index = j;
+                }
+            }
+
+            // Consider evicting the LRU entry
+            float eviction_cost = lambda * log2f(max_palette + 1.f);  // Cost of evicting and adding a new entry
+            if (eviction_cost < best_rd_cost) {
+                best_rd_cost = eviction_cost;
+                best_palette_index = lru_index;
+
+                // Clear the evicted palette entry
+                palette[lru_index].num_blocks = 0;
+                memset(palette[lru_index].block_average_pixels, 0, sizeof(palette[lru_index].block_average_pixels));
+            }
+        }
+        
+        // Add block to the best palette entry
+        cluster_t* best_cluster = &palette[best_palette_index];
+        if (best_cluster->num_blocks >= best_cluster->capacity) {
+            best_cluster->capacity *= 2;
+            best_cluster->block_indexes = (int*)realloc(best_cluster->block_indexes, best_cluster->capacity * sizeof(int));
+        }
+        best_cluster->block_indexes[best_cluster->num_blocks++] = i;
+        best_cluster->last_used = current_time;
+
+        // Update the average for the best palette entry
+        for (int k = 0; k < pixels_per_block; k++) {
+            best_cluster->block_average_pixels[k] = (best_cluster->block_average_pixels[k] * (best_cluster->num_blocks - 1) + 
+                                                    (block_type == ASTCENC_TYPE_U8 ? original_decoded[k] : ((float*)original_decoded)[k])) / 
+                                                    best_cluster->num_blocks;
+        }
+
+        // Compress the average block once
+        image_block blk = { 0 };
+        blk.texel_count = static_cast<uint8_t>(block_width * block_height * block_depth);
+        blk.grayscale = false;
+        blk.channel_weight = vfloat4(1.0f);
+
+        // compute data min/max/mean
+        float min = 65535.0f;
+        float max = 0.0f;
+        float mean = 0.0f;
+        for (int i = 0; i < pixels_per_block; i++) {
+            float v = best_cluster->block_average_pixels[i] / 255.f * 65535.f;
+            if (v < min) {
+                min = v;
+            }
+            if (v > max) {
+                max = v;
+            }
+            mean += v;
+        }
+        mean /= pixels_per_block;
+
+        blk.data_min = vfloat4(min);
+        blk.data_max = vfloat4(max);
+        blk.data_mean = vfloat4(mean);
+
+        if (block_type == ASTCENC_TYPE_U8) {
+            for (int i = 0; i < pixels_per_block; i+=4) {
+                blk.data_r[i/4] = static_cast<float>(best_cluster->block_average_pixels[i    ]) / 255.f * 65535.f;
+				blk.data_g[i/4] = static_cast<float>(best_cluster->block_average_pixels[i + 1]) / 255.f * 65535.f;
+				blk.data_b[i/4] = static_cast<float>(best_cluster->block_average_pixels[i + 2]) / 255.f * 65535.f;
+				blk.data_a[i/4] = static_cast<float>(best_cluster->block_average_pixels[i + 3]) / 255.f * 65535.f;
+            }
+        } else {
+            for (int i = 0; i < pixels_per_block; i+=4) {
+                blk.data_r[i/4] = best_cluster->block_average_pixels[i    ];
+                blk.data_g[i/4] = best_cluster->block_average_pixels[i + 1];
+                blk.data_b[i/4] = best_cluster->block_average_pixels[i + 2];
+                blk.data_a[i/4] = best_cluster->block_average_pixels[i + 3];
+            }
+        }
+        
+        blk.origin_texel = vfloat4(blk.data_r[0], blk.data_g[0], blk.data_b[0], blk.data_a[0]);
+
+		uint8_t compressed_block[16];
+        compress_block(context->context, blk, compressed_block, *temp_buffers);
+
+        // Update every block in the block index of the current palette entry to the new compressed values.
+        for (int k = 0; k < best_cluster->num_blocks; k++) {
+            uint8_t* block = data + best_cluster->block_indexes[k] * block_size;
+            memcpy(block, compressed_block, 16);
+        }
+
+        current_time += 1.0f;
+    }
+
+    // Clean up
+    for (int i = 0; i < num_palette; i++) {
+        free(palette[i].block_indexes);
+    }
+    free(palette);
+    free(temp_buffers);
+}
+
 void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
         lambda = 10.0f;
@@ -1489,6 +1694,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(0), bsd, all_original_decoded, block_info, all_gradients);
     //mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, create_from_int(1), bsd, all_original_decoded, block_info, all_gradients);
+
+    //jeff_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded);
 
     dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
     dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
