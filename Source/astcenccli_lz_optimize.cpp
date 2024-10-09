@@ -1216,27 +1216,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 //continue;
             //}
             
-            /*
-            int128_t weights_mask = shift_left(subtract(shift_left(one, endpoints_weight_bits), one), 128 - endpoints_weight_bits);
-            int128_t endpoints_mask = bitwise_not(weights_mask);
-
-            uint8_t temp_block[16];
-            memcpy(temp_block, current_block, 16);
-            int128_t* temp_bits = (int128_t*)temp_block;
-            *temp_bits = bitwise_or(
-                bitwise_and(candidate_endpoints, weights_mask), // TODO: really we should use optimal weights here.... but how?
-                bitwise_and(candidate_endpoints, endpoints_mask)
-            );
-
-            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-            float mse;
-            if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-            } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-            }
-            */
             float mse = get_or_compute_mse(candidate_endpoints);
 
             float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
@@ -1244,7 +1223,14 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
             // Insert into best_endpoints if it's one of the best candidates
             if (endpoints_count < best_candidates_count) {
-                best_endpoints[endpoints_count++] = {candidate_endpoints, rd_cost};
+                // Find the position to insert
+                int insert_pos = endpoints_count;
+                while (insert_pos > 0 && rd_cost < best_endpoints[insert_pos - 1].rd_cost) {
+                    best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
+                    insert_pos--;
+                }
+                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, bit_cost, k};
+                endpoints_count++;
             } else if (rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
                 // Find the position to insert
                 int insert_pos = best_candidates_count - 1;
@@ -1294,7 +1280,14 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
             // Insert into best_weights if it's one of the best candidates
             if (weights_count < best_candidates_count) {
-                best_weights[weights_count++] = {candidate_weights, rd_cost};
+                // Find the position to insert
+                int insert_pos = weights_count;
+                while (insert_pos > 0 && rd_cost < best_weights[insert_pos - 1].rd_cost) {
+                    best_weights[insert_pos] = best_weights[insert_pos - 1];
+                    insert_pos--;
+                }
+                best_weights[insert_pos] = {candidate_weights, rd_cost, bit_cost, k};
+                weights_count++;
             } else if (rd_cost < best_weights[best_candidates_count - 1].rd_cost) {
                 // Find the position to insert
                 int insert_pos = best_candidates_count - 1;
