@@ -1164,9 +1164,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
             // If not in cache, compute and cache the result
             uint8_t temp_block[16];
-            memcpy(temp_block, current_block, 16);
-            int128_t* temp_bits = (int128_t*)temp_block;
-            *temp_bits = candidate_bits;
+            *((int128_t*)temp_block) = candidate_bits;
 
             // Decode and compute MSE
             astc_decompress_block(*bsd, temp_block, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
