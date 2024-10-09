@@ -1,5 +1,9 @@
 #include <stdlib.h>
 #include <math.h>
+#include <immintrin.h> // For SSE intrinsics
+#ifdef __ARM_NEON
+#include <arm_neon.h> // For NEON intrinsics
+#endif
 #include "astcenc.h"
 #include "astcenccli_internal.h"
 #include "astcenc_internal_entry.h"
@@ -115,6 +119,7 @@
 
 //#define MAX_MTF_SIZE (256+64+16+1)
 #define MAX_MTF_SIZE (1024+256+64+16+1)
+#define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 
 static const float BASE_GRADIENT_SCALE = 10.0f;
 static const float GRADIENT_POW = 3.0f;
@@ -142,6 +147,12 @@ typedef struct {
     float adjusted_lambda_endpoints;
 } block_info_t;
 
+typedef struct {
+    uint8_t encoded[16];
+    uint8_t decoded[6 * 6 * 6 * 4 * 4];  // Max size for both U8 and float types
+    bool valid;
+} CachedBlock;
+
 template<typename T> static inline T max(T a, T b) { return a > b ? a : b; }
 template<typename T> static inline T min(T a, T b) { return a < b ? a : b; }
 static float sigmoid(float x) { return 1.0f / (1.0f + expf(-SIGMOID_STEEPNESS * (x - SIGMOID_CENTER))); }
@@ -154,6 +165,14 @@ static inline float log2_fast(float val) {
     log_2 += ((-0.3358287811f) * u.val + 2.0f) * u.val  -0.65871759316667f; 
     return log_2;
 } 
+
+static uint32_t hash_128(int128_t value) {
+    uint32_t hash = 0;
+    for (int i = 0; i < 4; i++) {
+        hash ^= ((uint32_t*)&value)[i];
+    }
+    return hash;
+}
 
 static void histo_reset(histo_t *h) {
     for(int i = 0; i < 256; i++) {
@@ -247,6 +266,57 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 
 template<typename T>
 static inline float calculate_mse(const T* img1, const T* img2, int total) {
+#ifdef __SSE__
+    __m128 sum = _mm_setzero_ps();
+    __m128 weights = _mm_set_ps(1.0f, 0.114f, 0.587f, 0.299f);
+
+    for (int i = 0; i < total; i += 4) {
+        __m128 v1, v2, diff;
+        if constexpr (std::is_same_v<T, uint8_t>) {
+            v1 = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(img1 + i)));
+            v2 = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(img2 + i)));
+        } else {
+            v1 = _mm_loadu_ps(reinterpret_cast<const float*>(img1 + i));
+            v2 = _mm_loadu_ps(reinterpret_cast<const float*>(img2 + i));
+        }
+        diff = _mm_sub_ps(v1, v2);
+        diff = _mm_mul_ps(diff, diff);
+        diff = _mm_mul_ps(diff, weights);
+        sum = _mm_add_ps(sum, diff);
+    }
+
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    float result;
+    _mm_store_ss(&result, sum);
+    return result / (total / 4);
+
+#elif defined(__ARM_NEON)
+    float32x4_t sum = vdupq_n_f32(0);
+    float32x4_t weights = {0.299f, 0.587f, 0.114f, 1.0f};
+
+    for (int i = 0; i < total; i += 4) {
+        float32x4_t v1, v2, diff;
+        if constexpr (std::is_same_v<T, uint8_t>) {
+            uint8x8_t u1 = vld1_u8(img1 + i);
+            uint8x8_t u2 = vld1_u8(img2 + i);
+            v1 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(u1))));
+            v2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(u2))));
+        } else {
+            v1 = vld1q_f32(reinterpret_cast<const float*>(img1 + i));
+            v2 = vld1q_f32(reinterpret_cast<const float*>(img2 + i));
+        }
+        diff = vsubq_f32(v1, v2);
+        diff = vmulq_f32(diff, diff);
+        diff = vmulq_f32(diff, weights);
+        sum = vaddq_f32(sum, diff);
+    }
+
+    float32x2_t sum2 = vadd_f32(vget_low_f32(sum), vget_high_f32(sum));
+    return vget_lane_f32(vpadd_f32(sum2, sum2), 0) / (total / 4);
+
+#else
+    // Fallback to the original implementation
     float sum = 0.0;
     const float weights[4] = {0.299f, 0.587f, 0.114f, 1.0f}; // R, G, B, A weights
     for (int i = 0; i < total; i += 4) {
@@ -256,6 +326,7 @@ static inline float calculate_mse(const T* img1, const T* img2, int total) {
         }
     }
     return sum / (total / 4);
+#endif
 }
 
 template<typename T>
@@ -1042,6 +1113,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
 
+    CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
+
     MTF_LL mtf_weights;
     MTF_LL mtf_endpoints;
 
@@ -1076,6 +1149,38 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
         uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 
+        // Function to get or compute MSE for a candidate
+        auto get_or_compute_mse = [&](const int128_t& candidate_bits) -> float {
+            uint32_t hash = hash_128(candidate_bits) & (CACHE_SIZE - 1);  // Modulo CACHE_SIZE
+
+            // Check if the candidate is in the cache
+            if (block_cache[hash].valid && is_equal(*((int128_t*)block_cache[hash].encoded), candidate_bits)) {
+                // Compute MSE using cached decoded data
+                if (block_type == ASTCENC_TYPE_U8) {
+                    return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                } else {
+                    return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                }
+            }
+
+            // If not in cache, compute and cache the result
+            uint8_t temp_block[16];
+            memcpy(temp_block, current_block, 16);
+            int128_t* temp_bits = (int128_t*)temp_block;
+            *temp_bits = candidate_bits;
+
+            // Decode and compute MSE
+            astc_decompress_block(*bsd, temp_block, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
+            memcpy(block_cache[hash].encoded, temp_block, 16);
+            block_cache[hash].valid = true;
+
+            if (block_type == ASTCENC_TYPE_U8) {
+                return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+            } else {
+                return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+            }
+        };
+
         // Decode the original block to compute initial MSE
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
@@ -1096,20 +1201,22 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             float bit_cost;
             int mtf_position;
         };
+        const int best_candidates_count = 16;
         Candidate best_weights[16];
         Candidate best_endpoints[16];
         int weights_count = 0;
         int endpoints_count = 0;
-        const int best_candidates_count = 16;
 
         // Find best endpoint candidates
         for (int k = 0; k < mtf_endpoints.size; k++) {
             int128_t candidate_endpoints = mtf_endpoints.list[k];
-            int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-            int endpoints_weight_bits = weight_bits[endpoints_mode];
+            //int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+            //int endpoints_weight_bits = weight_bits[endpoints_mode];
             //if (endpoints_weight_bits < WEIGHT_BITS) {
                 //continue;
             //}
+            
+            /*
             int128_t weights_mask = shift_left(subtract(shift_left(one, endpoints_weight_bits), one), 128 - endpoints_weight_bits);
             int128_t endpoints_mask = bitwise_not(weights_mask);
 
@@ -1117,7 +1224,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             memcpy(temp_block, current_block, 16);
             int128_t* temp_bits = (int128_t*)temp_block;
             *temp_bits = bitwise_or(
-                bitwise_and(current_bits, weights_mask), // TODO: really we should use optimal weights here.... but how?
+                bitwise_and(candidate_endpoints, weights_mask), // TODO: really we should use optimal weights here.... but how?
                 bitwise_and(candidate_endpoints, endpoints_mask)
             );
 
@@ -1129,6 +1236,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             } else {
                 mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
+            */
+            float mse = get_or_compute_mse(candidate_endpoints);
 
             float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
             float rd_cost = mse + bit_cost;
