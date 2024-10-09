@@ -1199,7 +1199,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             float rd_cost;
             int mtf_position;
         };
-        const int best_candidates_count = 16;
+        const int best_candidates_count = 8;
         Candidate best_weights[16];
         Candidate best_endpoints[16];
         int weights_count = 0;
