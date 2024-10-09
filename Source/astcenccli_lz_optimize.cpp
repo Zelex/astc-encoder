@@ -1359,10 +1359,17 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         if (!is_equal(best_match, current_bits)) {
             *((int128_t*)current_block) = best_match;
         }
+
+        // Recalculate masks for the best match
+        int best_mode = ((uint16_t*)&best_match)[0] & 0x7ff;
+        int best_weight_bits = weight_bits[best_mode];
+        int128_t best_weights_mask = shift_left(subtract(shift_left(one, best_weight_bits), one), 128 - best_weight_bits);
+        int128_t best_endpoints_mask = bitwise_not(best_weights_mask);
+
 		histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
 		histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-        mtf_ll_encode(&mtf_weights, best_match, weights_mask);
-        mtf_ll_encode(&mtf_endpoints, best_match, endpoints_mask);
+        mtf_ll_encode(&mtf_weights, best_match, best_weights_mask); 
+        mtf_ll_encode(&mtf_endpoints, best_match, best_endpoints_mask);
     };
 
     int mtf_size = MAX_MTF_SIZE;
@@ -1422,7 +1429,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to [0.5, 1.5]
     float lambda_10 = 0.5f;
-    float lambda_40 = 1.5f;
+    float lambda_40 = 1.0f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
