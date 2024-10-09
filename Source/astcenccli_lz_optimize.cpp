@@ -201,8 +201,8 @@ static float histo_cost(histo_t *h, int128_t value, int128_t mask) {
         if (get_byte(mask, i)) {
             int c = h->h[get_byte(value, i)] + 1;
             tlb += 1;
-			cost *= tlb / c;
-			count++;
+            cost *= tlb / c;
+            count++;
         }
     }
 
@@ -1247,12 +1247,20 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         int128_t best_endpoints_weight_mask = shift_left(subtract(shift_left(one, best_endpoints_weight_bits), one), 128 - best_endpoints_weight_bits);
         int128_t best_endpoints_endpoint_mask = bitwise_not(best_endpoints_weight_mask);
 
+        // find min weight bits
+        int min_weight_bits = 128;
+        for (int i = 0; i < NUM_BLOCK_MODES; i++) {
+            if (weight_bits[i] < min_weight_bits) {
+                min_weight_bits = weight_bits[i];
+            }
+        }
+
         // Find best weight candidates
         for (int k = 0; k < mtf_weights.size; k++) {
             int128_t candidate_weights = mtf_weights.list[k];
             int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
             int weights_weight_bits = weight_bits[weights_mode];
-            if (weights_weight_bits < best_endpoints_weight_bits) {
+            if (weights_weight_bits < min_weight_bits) {
                 continue;
             }
 
