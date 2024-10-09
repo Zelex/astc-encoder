@@ -201,10 +201,8 @@ static float histo_cost(histo_t *h, int128_t value, int128_t mask) {
         if (get_byte(mask, i)) {
             int c = h->h[get_byte(value, i)] + 1;
             tlb += 1;
-            if (c > 0) {
-                cost *= tlb / c;
-                count++;
-            }
+			cost *= tlb / c;
+			count++;
         }
     }
 
