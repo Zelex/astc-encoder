@@ -1113,8 +1113,9 @@ void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_widt
 static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
-    const int blocks_per_thread = 8192;
-    const int num_threads = (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread);
+    const int max_threads = 8;  // Maximum number of threads
+    const int blocks_per_thread = (int)((num_blocks + max_threads - 1) / max_threads);
+    const int num_threads = min(max_threads, (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread));
 
     std::vector<std::thread> threads;
 
@@ -1132,6 +1133,26 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             block[1] = ((i >> 8) & 255);
             weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
         }
+
+        // Helper function to prime MTF_LL structures
+        auto prime_mtf = [&](int start, int end, int step) {
+            for (int i = start; i != end; i += step) {
+                uint8_t *current_block = data + i * block_size;
+                int128_t current_bits = *((int128_t*)current_block);
+                
+                int mode = ((uint16_t*)current_block)[0] & 0x7ff;
+                int WEIGHT_BITS = weight_bits[mode];
+                
+                int128_t one = create_from_int(1);
+                int128_t weights_mask = shift_left(subtract(shift_left(one, WEIGHT_BITS), one), 128 - WEIGHT_BITS);
+                int128_t endpoints_mask = bitwise_not(weights_mask);
+
+                histo_update(&mtf_weights.histogram, current_bits, bitwise_not(create_from_int(0)));
+                histo_update(&mtf_endpoints.histogram, current_bits, bitwise_not(create_from_int(0)));
+                mtf_ll_encode(&mtf_weights, current_bits, weights_mask);
+                mtf_ll_encode(&mtf_endpoints, current_bits, endpoints_mask);
+            }
+        };
 
         // Helper function to process a single block
         auto process_block = [&](size_t block_index) {
@@ -1384,6 +1405,11 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         // Backward pass
         mtf_ll_init(&mtf_weights, mtf_size);
         mtf_ll_init(&mtf_endpoints, mtf_size);
+
+        int prime_end = (int)start_block + MAX_MTF_SIZE;
+        if (prime_end > (int)end_block) prime_end = (int)end_block;
+        prime_mtf(prime_end - 1, (int)start_block - 1, -1);
+
         for (size_t i = end_block; i-- > start_block;) {
             process_block(i);
         }
@@ -1391,6 +1417,11 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         // Forward pass
         mtf_ll_init(&mtf_weights, mtf_size);
         mtf_ll_init(&mtf_endpoints, mtf_size);
+
+        int prime_start = (int)start_block - MAX_MTF_SIZE;
+        if (prime_start < 0) prime_start = 0;
+        prime_mtf(prime_start, (int)start_block, 1);
+
         for (size_t i = start_block; i < end_block; i++) {
             process_block(i);
         }
