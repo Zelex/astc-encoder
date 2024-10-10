@@ -1117,7 +1117,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     const int num_threads = (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread);
 
     std::vector<std::thread> threads;
-    std::atomic<int> current_block(0);
 
     auto thread_function = [&](size_t start_block, size_t end_block) {
         uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
