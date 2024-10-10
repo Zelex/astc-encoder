@@ -1,3 +1,6 @@
+#include <thread>
+#include <vector>
+#include <atomic>
 #include <stdlib.h>
 #include <math.h>
 #include <immintrin.h> // For SSE intrinsics
@@ -1108,203 +1111,160 @@ void print_adjusted_lambda_ascii(const block_info_t* block_info, int blocks_widt
 }
 
 static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
-    uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
+    const int blocks_per_thread = 8192;
+    const int num_threads = (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread);
 
-    CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
+    std::vector<std::thread> threads;
+    std::atomic<int> current_block(0);
 
-    MTF_LL mtf_weights;
-    MTF_LL mtf_endpoints;
+    auto thread_function = [&](size_t start_block, size_t end_block) {
+        uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
+        CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
+        MTF_LL mtf_weights;
+        MTF_LL mtf_endpoints;
 
-    // Initialize weight bits table
-    uint8_t* weight_bits = (uint8_t*)malloc(NUM_BLOCK_MODES);
-    for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
-        uint8_t block[16];
-        block[0] = (i & 255);
-        block[1] = ((i >> 8) & 255);
-        weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
-    }
-
-    // Helper function to process a single block
-    auto process_block = [&](size_t block_index) {
-        uint8_t *current_block = data + block_index * block_size;
-        int128_t current_bits = *((int128_t*)current_block);
-        int128_t best_match = current_bits;
-
-        int mode = ((uint16_t*)current_block)[0] & 0x7ff;
-        int WEIGHT_BITS = weight_bits[mode];
-        if (WEIGHT_BITS == 0) {
-            histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
-            histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-            mtf_ll_encode(&mtf_weights, best_match, create_from_int(0));
-            mtf_ll_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
-            return; // Constant color block, skip
+        // Initialize weight bits table
+        uint8_t* weight_bits = (uint8_t*)malloc(NUM_BLOCK_MODES);
+        for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
+            uint8_t block[16];
+            block[0] = (i & 255);
+            block[1] = ((i >> 8) & 255);
+            weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
         }
 
-        int128_t one = create_from_int(1);
-        int128_t weights_mask = shift_left(subtract(shift_left(one, WEIGHT_BITS), one), 128 - WEIGHT_BITS);
-        int128_t endpoints_mask = bitwise_not(weights_mask);
+        // Helper function to process a single block
+        auto process_block = [&](size_t block_index) {
+            uint8_t *current_block = data + block_index * block_size;
+            int128_t current_bits = *((int128_t*)current_block);
+            int128_t best_match = current_bits;
 
-        uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+            int mode = ((uint16_t*)current_block)[0] & 0x7ff;
+            int WEIGHT_BITS = weight_bits[mode];
+            if (WEIGHT_BITS == 0) {
+                histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
+                histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
+                mtf_ll_encode(&mtf_weights, best_match, create_from_int(0));
+                mtf_ll_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
+                return; // Constant color block, skip
+            }
 
-        // Function to get or compute MSE for a candidate
-        auto get_or_compute_mse = [&](const int128_t& candidate_bits) -> float {
-            uint32_t hash = hash_128(candidate_bits) & (CACHE_SIZE - 1);  // Modulo CACHE_SIZE
+            int128_t one = create_from_int(1);
+            int128_t weights_mask = shift_left(subtract(shift_left(one, WEIGHT_BITS), one), 128 - WEIGHT_BITS);
+            int128_t endpoints_mask = bitwise_not(weights_mask);
 
-            // Check if the candidate is in the cache
-            if (block_cache[hash].valid && is_equal(*((int128_t*)block_cache[hash].encoded), candidate_bits)) {
-                // Compute MSE using cached decoded data
+            uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+
+            // Function to get or compute MSE for a candidate
+            auto get_or_compute_mse = [&](const int128_t& candidate_bits) -> float {
+                uint32_t hash = hash_128(candidate_bits) & (CACHE_SIZE - 1);  // Modulo CACHE_SIZE
+
+                // Check if the candidate is in the cache
+                if (block_cache[hash].valid && is_equal(*((int128_t*)block_cache[hash].encoded), candidate_bits)) {
+                    // Compute MSE using cached decoded data
+                    if (block_type == ASTCENC_TYPE_U8) {
+                        return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                    } else {
+                        return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                    }
+                }
+
+                // If not in cache, compute and cache the result
+                uint8_t temp_block[16];
+                *((int128_t*)temp_block) = candidate_bits;
+
+                // Decode and compute MSE
+                astc_decompress_block(*bsd, temp_block, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
+                memcpy(block_cache[hash].encoded, temp_block, 16);
+                block_cache[hash].valid = true;
+
                 if (block_type == ASTCENC_TYPE_U8) {
                     return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
                 } else {
                     return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
                 }
-            }
+            };
 
-            // If not in cache, compute and cache the result
-            uint8_t temp_block[16];
-            *((int128_t*)temp_block) = candidate_bits;
-
-            // Decode and compute MSE
-            astc_decompress_block(*bsd, temp_block, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
-            memcpy(block_cache[hash].encoded, temp_block, 16);
-            block_cache[hash].valid = true;
-
+            // Decode the original block to compute initial MSE
+            astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
+            float original_mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
             } else {
-                return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
             }
-        };
 
-        // Decode the original block to compute initial MSE
-        astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
-        float original_mse;
-        if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-        } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-        }
+            float adjusted_lambda_weights = block_info[block_index].adjusted_lambda_weights;
+            float adjusted_lambda_endpoints = block_info[block_index].adjusted_lambda_endpoints;
+            float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
+                                                adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
 
-        float adjusted_lambda_weights = block_info[block_index].adjusted_lambda_weights;
-        float adjusted_lambda_endpoints = block_info[block_index].adjusted_lambda_endpoints;
-        float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
-                                            adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
+            struct Candidate {
+                int128_t bits;
+                float rd_cost;
+                int mtf_position;
+            };
+            const int best_candidates_count = 8;
+            Candidate best_weights[8];
+            Candidate best_endpoints[8];
+            int weights_count = 0;
+            int endpoints_count = 0;
 
-        struct Candidate {
-            int128_t bits;
-            float rd_cost;
-            int mtf_position;
-        };
-        const int best_candidates_count = 8;
-        Candidate best_weights[8];
-        Candidate best_endpoints[8];
-        int weights_count = 0;
-        int endpoints_count = 0;
-
-        // Find best endpoint candidates
-        for (int k = 0; k < mtf_endpoints.size; k++) {
-            int128_t candidate_endpoints = mtf_endpoints.list[k];
-            //int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-            //int endpoints_weight_bits = weight_bits[endpoints_mode];
-            //if (endpoints_weight_bits < WEIGHT_BITS) {
-                //continue;
-            //}
-            
-            float mse = get_or_compute_mse(candidate_endpoints);
-
-            float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
-            float rd_cost = mse + bit_cost;
-
-            // Insert into best_endpoints if it's one of the best candidates
-            if (endpoints_count < best_candidates_count || rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
-                int insert_pos = endpoints_count < best_candidates_count ? endpoints_count : best_candidates_count - 1;
+            // Find best endpoint candidates
+            for (int k = 0; k < mtf_endpoints.size; k++) {
+                int128_t candidate_endpoints = mtf_endpoints.list[k];
+                //int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+                //int endpoints_weight_bits = weight_bits[endpoints_mode];
+                //if (endpoints_weight_bits < WEIGHT_BITS) {
+                    //continue;
+                //}
                 
-                // Find the position to insert
-                while (insert_pos > 0 && rd_cost < best_endpoints[insert_pos - 1].rd_cost) {
-                    best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
-                    insert_pos--;
-                }
-                
-                best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, k};
-                
-                if (endpoints_count < best_candidates_count) {
-                    endpoints_count++;
+                float mse = get_or_compute_mse(candidate_endpoints);
+
+                float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
+                float rd_cost = mse + bit_cost;
+
+                // Insert into best_endpoints if it's one of the best candidates
+                if (endpoints_count < best_candidates_count || rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
+                    int insert_pos = endpoints_count < best_candidates_count ? endpoints_count : best_candidates_count - 1;
+                    
+                    // Find the position to insert
+                    while (insert_pos > 0 && rd_cost < best_endpoints[insert_pos - 1].rd_cost) {
+                        best_endpoints[insert_pos] = best_endpoints[insert_pos - 1];
+                        insert_pos--;
+                    }
+                    
+                    best_endpoints[insert_pos] = {candidate_endpoints, rd_cost, k};
+                    
+                    if (endpoints_count < best_candidates_count) {
+                        endpoints_count++;
+                    }
                 }
             }
-        }
 
-        // Best of best endpoint candidate
-        int128_t best_endpoints_bits = best_endpoints[0].bits;
-        int best_endpoints_mode = ((uint16_t*)&best_endpoints_bits)[0] & 0x7ff;
-        int best_endpoints_weight_bits = weight_bits[best_endpoints_mode];
-        int128_t best_endpoints_weight_mask = shift_left(subtract(shift_left(one, best_endpoints_weight_bits), one), 128 - best_endpoints_weight_bits);
-        int128_t best_endpoints_endpoint_mask = bitwise_not(best_endpoints_weight_mask);
+            // Best of best endpoint candidate
+            int128_t best_endpoints_bits = best_endpoints[0].bits;
+            int best_endpoints_mode = ((uint16_t*)&best_endpoints_bits)[0] & 0x7ff;
+            int best_endpoints_weight_bits = weight_bits[best_endpoints_mode];
+            int128_t best_endpoints_weight_mask = shift_left(subtract(shift_left(one, best_endpoints_weight_bits), one), 128 - best_endpoints_weight_bits);
+            int128_t best_endpoints_endpoint_mask = bitwise_not(best_endpoints_weight_mask);
 
-        // Find best weight candidates
-        for (int k = 0; k < mtf_weights.size; k++) {
-            int128_t candidate_weights = mtf_weights.list[k];
-            int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
-            int weights_weight_bits = weight_bits[weights_mode];
-            if (weights_weight_bits < best_endpoints_weight_bits) {
-                continue;
-            }
-
-            uint8_t temp_block[16];
-            memcpy(temp_block, current_block, 16);
-            int128_t* temp_bits = (int128_t*)temp_block;
-            *temp_bits = bitwise_or(
-                bitwise_and(candidate_weights, best_endpoints_weight_mask),
-                bitwise_and(best_endpoints_bits, best_endpoints_endpoint_mask)
-            );
-
-            astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-            float mse;
-            if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-            } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-            }
-
-            float bit_cost = adjusted_lambda_weights * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
-            float rd_cost = mse + bit_cost;
-
-            // Insert into best_weights if it's one of the best candidates
-            if (weights_count < best_candidates_count || rd_cost < best_weights[best_candidates_count - 1].rd_cost) {
-                int insert_pos = weights_count < best_candidates_count ? weights_count : best_candidates_count - 1;
-                
-                // Find the position to insert
-                while (insert_pos > 0 && rd_cost < best_weights[insert_pos - 1].rd_cost) {
-                    best_weights[insert_pos] = best_weights[insert_pos - 1];
-                    insert_pos--;
+            // Find best weight candidates
+            for (int k = 0; k < mtf_weights.size; k++) {
+                int128_t candidate_weights = mtf_weights.list[k];
+                int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
+                int weights_weight_bits = weight_bits[weights_mode];
+                if (weights_weight_bits < best_endpoints_weight_bits) {
+                    continue;
                 }
-                
-                best_weights[insert_pos] = {candidate_weights, rd_cost, k};
-                
-                if (weights_count < best_candidates_count) {
-                    weights_count++;
-                }
-            }
-        }
-
-        // Search through combinations of best candidates
-        for (int i = 0; i < weights_count; i++) {
-            for (int j = 0; j < endpoints_count; j++) {
-                int128_t candidate_endpoints = best_endpoints[j].bits;
-                int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-                int endpoints_weight_bits = weight_bits[endpoints_mode];
-
-                int128_t weights_mask = shift_left(subtract(shift_left(one, endpoints_weight_bits), one), 128 - endpoints_weight_bits);
-                int128_t endpoints_mask = bitwise_not(weights_mask);
 
                 uint8_t temp_block[16];
                 memcpy(temp_block, current_block, 16);
                 int128_t* temp_bits = (int128_t*)temp_block;
                 *temp_bits = bitwise_or(
-                    bitwise_and(best_weights[i].bits, weights_mask),
-                    bitwise_and(best_endpoints[j].bits, endpoints_mask)
+                    bitwise_and(candidate_weights, best_endpoints_weight_mask),
+                    bitwise_and(best_endpoints_bits, best_endpoints_endpoint_mask)
                 );
 
                 astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -1316,117 +1276,150 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
                 }
 
-                float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                      adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+                float bit_cost = adjusted_lambda_weights * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
+                float rd_cost = mse + bit_cost;
 
-                if (rd_cost < best_rd_cost) {
-                    best_match = *temp_bits;
-                    best_rd_cost = rd_cost;
-                }
-
-                // now do the same thing for weights
-                int128_t candidate_weights = best_weights[i].bits;
-                int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
-                int weights_weight_bits = weight_bits[weights_mode];
-
-                weights_mask = shift_left(subtract(shift_left(one, weights_weight_bits), one), 128 - weights_weight_bits);
-                endpoints_mask = bitwise_not(weights_mask);
-
-                memcpy(temp_block, current_block, 16);
-                *temp_bits = bitwise_or(
-                    bitwise_and(best_weights[i].bits, weights_mask),
-                    bitwise_and(best_endpoints[j].bits, endpoints_mask)
-                );
-
-                astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-                if (block_type == ASTCENC_TYPE_U8) {
-                    mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
-                } else {
-                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
-                }
-
-                rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
-
-                if (rd_cost < best_rd_cost) {
-                    best_match = *temp_bits;
-                    best_rd_cost = rd_cost;
-                }
-            }
-        }
-
-        if (!is_equal(best_match, current_bits)) {
-            *((int128_t*)current_block) = best_match;
-        }
-
-        // Recalculate masks for the best match
-        int best_mode = ((uint16_t*)&best_match)[0] & 0x7ff;
-        int best_weight_bits = weight_bits[best_mode];
-        int128_t best_weights_mask = shift_left(subtract(shift_left(one, best_weight_bits), one), 128 - best_weight_bits);
-        int128_t best_endpoints_mask = bitwise_not(best_weights_mask);
-
-		histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
-		histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-        mtf_ll_encode(&mtf_weights, best_match, best_weights_mask); 
-        mtf_ll_encode(&mtf_endpoints, best_match, best_endpoints_mask);
-    };
-
-    int mtf_size = MAX_MTF_SIZE;
-
-    // Morton order pass
-    #if 0
-    mtf_ll_init(&mtf_weights, mtf_size);
-    mtf_ll_init(&mtf_endpoints, mtf_size);
-    if(block_depth > 1) {
-        for (int z = 0; z < blocks_z; z++) {
-            for (int y = 0; y < blocks_y; y++) {
-                for (int x = 0; x < blocks_x; x++) {
-                    uint32_t morton = xyz_to_morton(x, y, z);
-                    size_t block_index = morton;
-                    if (block_index < num_blocks) {
-                        process_block(block_index);
+                // Insert into best_weights if it's one of the best candidates
+                if (weights_count < best_candidates_count || rd_cost < best_weights[best_candidates_count - 1].rd_cost) {
+                    int insert_pos = weights_count < best_candidates_count ? weights_count : best_candidates_count - 1;
+                    
+                    // Find the position to insert
+                    while (insert_pos > 0 && rd_cost < best_weights[insert_pos - 1].rd_cost) {
+                        best_weights[insert_pos] = best_weights[insert_pos - 1];
+                        insert_pos--;
+                    }
+                    
+                    best_weights[insert_pos] = {candidate_weights, rd_cost, k};
+                    
+                    if (weights_count < best_candidates_count) {
+                        weights_count++;
                     }
                 }
             }
-        }
-    } else {
-        for (int y = 0; y < blocks_y; y++) {
-            for (int x = 0; x < blocks_x; x++) {
-                uint32_t morton = xy_to_morton(x, y);
-                size_t block_index = morton;
-                if (block_index < num_blocks) {
-                    process_block(block_index);
+
+            // Search through combinations of best candidates
+            for (int i = 0; i < weights_count; i++) {
+                for (int j = 0; j < endpoints_count; j++) {
+                    int128_t candidate_endpoints = best_endpoints[j].bits;
+                    int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+                    int endpoints_weight_bits = weight_bits[endpoints_mode];
+
+                    int128_t weights_mask = shift_left(subtract(shift_left(one, endpoints_weight_bits), one), 128 - endpoints_weight_bits);
+                    int128_t endpoints_mask = bitwise_not(weights_mask);
+
+                    uint8_t temp_block[16];
+                    memcpy(temp_block, current_block, 16);
+                    int128_t* temp_bits = (int128_t*)temp_block;
+                    *temp_bits = bitwise_or(
+                        bitwise_and(best_weights[i].bits, weights_mask),
+                        bitwise_and(best_endpoints[j].bits, endpoints_mask)
+                    );
+
+                    astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+                    float mse;
+                    if (block_type == ASTCENC_TYPE_U8) {
+                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                    } else {
+                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                    }
+
+                    float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                        adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+
+                    if (rd_cost < best_rd_cost) {
+                        best_match = *temp_bits;
+                        best_rd_cost = rd_cost;
+                    }
+
+                    // now do the same thing for weights
+                    int128_t candidate_weights = best_weights[i].bits;
+                    int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
+                    int weights_weight_bits = weight_bits[weights_mode];
+
+                    weights_mask = shift_left(subtract(shift_left(one, weights_weight_bits), one), 128 - weights_weight_bits);
+                    endpoints_mask = bitwise_not(weights_mask);
+
+                    memcpy(temp_block, current_block, 16);
+                    *temp_bits = bitwise_or(
+                        bitwise_and(best_weights[i].bits, weights_mask),
+                        bitwise_and(best_endpoints[j].bits, endpoints_mask)
+                    );
+
+                    astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+                    if (block_type == ASTCENC_TYPE_U8) {
+                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                    } else {
+                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                    }
+
+                    rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                    adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+
+                    if (rd_cost < best_rd_cost) {
+                        best_match = *temp_bits;
+                        best_rd_cost = rd_cost;
+                    }
                 }
             }
+
+            if (!is_equal(best_match, current_bits)) {
+                *((int128_t*)current_block) = best_match;
+            }
+
+            // Recalculate masks for the best match
+            int best_mode = ((uint16_t*)&best_match)[0] & 0x7ff;
+            int best_weight_bits = weight_bits[best_mode];
+            int128_t best_weights_mask = shift_left(subtract(shift_left(one, best_weight_bits), one), 128 - best_weight_bits);
+            int128_t best_endpoints_mask = bitwise_not(best_weights_mask);
+
+            histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
+            histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
+            mtf_ll_encode(&mtf_weights, best_match, best_weights_mask); 
+            mtf_ll_encode(&mtf_endpoints, best_match, best_endpoints_mask);
+        };
+
+        int mtf_size = MAX_MTF_SIZE;
+
+        // Backward pass
+        mtf_ll_init(&mtf_weights, mtf_size);
+        mtf_ll_init(&mtf_endpoints, mtf_size);
+        for (size_t i = end_block; i-- > start_block;) {
+            process_block(i);
         }
-    }
-    #endif
 
-    // Backward pass
-    mtf_ll_init(&mtf_weights, mtf_size);
-    mtf_ll_init(&mtf_endpoints, mtf_size);
-    for (size_t i = num_blocks; i-- > 0;) {
-        process_block(i);
+        // Forward pass
+        mtf_ll_init(&mtf_weights, mtf_size);
+        mtf_ll_init(&mtf_endpoints, mtf_size);
+        for (size_t i = start_block; i < end_block; i++) {
+            process_block(i);
+        }
+
+        // Clean up
+        free(modified_decoded);
+        free(weight_bits);
+    };
+
+    // Start threads
+    for (int i = 0; i < num_threads; ++i) {
+        size_t start_block = i * blocks_per_thread;
+        size_t end_block = min((i + 1) * blocks_per_thread, (int)num_blocks);
+        threads.emplace_back(thread_function, start_block, end_block);
     }
 
-    // Forward pass
-    mtf_ll_init(&mtf_weights, mtf_size);
-    mtf_ll_init(&mtf_endpoints, mtf_size);
-    for (size_t i = 0; i < num_blocks; i++) {
-        process_block(i);
+    // Wait for all threads to finish
+    for (auto& thread : threads) {
+        thread.join();
     }
-
-    // Clean up
-    free(modified_decoded);
-    free(weight_bits);
 }
 
 void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
     //lambda /= 5.f;
+    //lambda *= 8.f;
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
-    const int max_palette = 128; 
+    const int max_palette = 512; 
     int num_palette = 0;
     const int pixels_per_block = block_width * block_height * block_depth * 4;
 
