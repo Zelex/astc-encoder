@@ -1357,7 +1357,7 @@ void high_pass_filter_squared_blurred(const uint8_t* input, float* output, int w
     // Map x |-> C1/(C2 + sqrt(x))
     float C1 = 256.0f;
     float C2 = 1.0f;
-    float activity_scalar = 2.0f;
+    float activity_scalar = 1.0f;
     for (size_t i = 0; i < pixel_count; i++) {
         output[i] = C1 / (C2 + activity_scalar * sqrtf(output[i]));
         output[i] = max(output[i], 1.0f);
@@ -1374,7 +1374,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.025f;
-    float lambda_40 = 0.0825f;
+    float lambda_40 = 0.15f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
@@ -1440,10 +1440,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate original MSE
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
+            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
         else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
 
         // Process and recalculate the block
@@ -1455,10 +1455,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate new MSE
         float new_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
+            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
         else {
-            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
+            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
 
         // Only accept the changes if the new MSE is better (lower) than the original
