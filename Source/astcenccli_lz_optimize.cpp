@@ -125,13 +125,13 @@
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 
 static const float BASE_GRADIENT_SCALE = 10.0f;
-static const float GRADIENT_POW = 3.5f;
+static const float GRADIENT_POW = 3.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
 static const float SIGMOID_CENTER = 0.1f;
 static const float SIGMOID_STEEPNESS = 20.0f;
 
-#define ERROR_FN calculate_mse
+#define ERROR_FN calculate_mse_weighted
 
 typedef struct {
     int h[256];
@@ -264,6 +264,16 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
+}
+
+template<typename T1, typename T2>
+static inline float calculate_mse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
+    float sum = 0.0f;
+    for (int i = 0; i < total; i++) {
+        float diff = (float)img1[i] - (float)img2[i];
+        sum += diff * diff * weights[i/4];
+    }
+    return sum / total;
 }
 
 template<typename T1, typename T2>
@@ -964,9 +974,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
         } else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
         }
 
         float adjusted_lambda = is_weights_search ? block_info[block_index].adjusted_lambda_weights : block_info[block_index].adjusted_lambda_endpoints;
@@ -999,9 +1009,9 @@ static void mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
             float mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             } else {
-                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
             float modified_bit_cost = calculate_bit_cost(k, candidate_bits, &mtf, WEIGHTS_MASK);
@@ -1164,9 +1174,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 if (block_cache[hash].valid && is_equal(*((int128_t*)block_cache[hash].encoded), candidate_bits)) {
                     // Compute MSE using cached decoded data
                     if (block_type == ASTCENC_TYPE_U8) {
-                        return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                        return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                        return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
                 }
 
@@ -1180,9 +1190,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 block_cache[hash].valid = true;
 
                 if (block_type == ASTCENC_TYPE_U8) {
-                    return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                    return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                 } else {
-                    return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4);
+                    return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                 }
             };
 
@@ -1190,9 +1200,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
             float original_mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             } else {
-                original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
             float adjusted_lambda_weights = block_info[block_index].adjusted_lambda_weights;
@@ -1271,9 +1281,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
                 float mse;
                 if (block_type == ASTCENC_TYPE_U8) {
-                    mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                    mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                 } else {
-                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                 }
 
                 float bit_cost = adjusted_lambda_weights * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
@@ -1319,9 +1329,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
                     float mse;
                     if (block_type == ASTCENC_TYPE_U8) {
-                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
                     float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
@@ -1349,9 +1359,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
                     if (block_type == ASTCENC_TYPE_U8) {
-                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4);
+                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4);
+                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
                     rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
@@ -1414,7 +1424,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     }
 }
 
-void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded) {
+void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float *all_gradients) {
     //lambda /= 5.f;
     //lambda *= 8.f;
     const int block_size = 16;
@@ -1483,17 +1493,17 @@ void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int b
                 uint8_t* original_block = all_original_decoded + block_index * pixels_per_block * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
                 
                 if (block_type == ASTCENC_TYPE_U8) {
-                    total_mse += ERROR_FN(original_block, new_average, pixels_per_block);
+                    total_mse += ERROR_FN(original_block, new_average, pixels_per_block, all_gradients);
                 } else {
-                    total_mse += ERROR_FN((float*)original_block, new_average, pixels_per_block);
+                    total_mse += ERROR_FN((float*)original_block, (float*)new_average, pixels_per_block, all_gradients);
                 }
             }
 
             // Add MSE for the current block
             if (block_type == ASTCENC_TYPE_U8) {
-                total_mse += ERROR_FN(original_decoded, new_average, pixels_per_block);
+                total_mse += ERROR_FN(original_decoded, new_average, pixels_per_block, all_gradients);
             } else {
-                total_mse += ERROR_FN((float*)original_decoded, new_average, pixels_per_block);
+                total_mse += ERROR_FN((float*)original_decoded, (float*)new_average, pixels_per_block, all_gradients);
             }
 
             // Calculate average MSE
@@ -1620,6 +1630,159 @@ void jeff_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int b
     free(temp_buffers);
 }
 
+void reconstruct_image(uint8_t* all_original_decoded, int width, int height, int depth, int block_width, int block_height, int block_depth, int block_type, uint8_t* output_image) {
+    int blocks_x = (width + block_width - 1) / block_width;
+    int blocks_y = (height + block_height - 1) / block_height;
+    int blocks_z = (depth + block_depth - 1) / block_depth;
+    int channels = 4;
+    int pixel_size = (block_type == ASTCENC_TYPE_U8) ? 1 : 4;
+
+    for (int z = 0; z < blocks_z; z++) {
+        for (int y = 0; y < blocks_y; y++) {
+            for (int x = 0; x < blocks_x; x++) {
+                int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
+                uint8_t* block_data = all_original_decoded + block_index * block_width * block_height * block_depth * channels * pixel_size;
+
+                for (int bz = 0; bz < block_depth; bz++) {
+                    for (int by = 0; by < block_height; by++) {
+                        for (int bx = 0; bx < block_width; bx++) {
+                            int image_x = x * block_width + bx;
+                            int image_y = y * block_height + by;
+                            int image_z = z * block_depth + bz;
+
+                            if (image_x < width && image_y < height && image_z < depth) {
+                                int image_index = (image_z * height * width + image_y * width + image_x) * channels * pixel_size;
+                                int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * channels * pixel_size;
+
+                                for (int c = 0; c < channels * pixel_size; c++) {
+                                    output_image[image_index + c] = block_data[block_pixel_index + c];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#define MAX_KERNEL_SIZE 33
+
+// Generate 1D Gaussian kernel
+static void generate_gaussian_kernel(float sigma, float* kernel, int* kernel_radius) {
+    *kernel_radius = (int)ceil(3.0f * sigma);
+    if (*kernel_radius > MAX_KERNEL_SIZE / 2) {
+        *kernel_radius = MAX_KERNEL_SIZE / 2;
+    }
+    
+    float sum = 0.0f;
+    for (int x = -(*kernel_radius); x <= *kernel_radius; x++) {
+        float value = expf(-(x*x) / (2.0f * sigma * sigma));
+        kernel[x + *kernel_radius] = value;
+        sum += value;
+    }
+    
+    // Normalize kernel
+    for (int i = 0; i < 2 * (*kernel_radius) + 1; i++) {
+        kernel[i] /= sum;
+    }
+}
+
+// Apply 1D convolution for 3D images
+template <typename T>
+static void apply_1d_convolution_3d(const T* input, T* output, int width, int height, int depth, int channels,
+                             const float* kernel, int kernel_radius, int direction) {
+    for (int z = 0; z < depth; z++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float sum[4] = {0};
+                for (int k = -kernel_radius; k <= kernel_radius; k++) {
+                    int sx = direction == 0 ? x + k : x;
+                    int sy = direction == 1 ? y + k : y;
+                    int sz = direction == 2 ? z + k : z;
+                    if (sx >= 0 && sx < width && sy >= 0 && sy < height && sz >= 0 && sz < depth) {
+                        const T* pixel = input + (sz * height * width + sy * width + sx) * channels;
+                        float kvalue = kernel[k + kernel_radius];
+                        for (int c = 0; c < channels; c++) {
+                            sum[c] += pixel[c] * kvalue;
+                        }
+                    }
+                }
+                T* out_pixel = output + (z * height * width + y * width + x) * channels;
+                for (int c = 0; c < channels; c++) {
+                    if(std::is_same_v<T, uint8_t>) {
+                        out_pixel[c] = (uint8_t)(sum[c] + 0.5f);
+                    } else {
+                        out_pixel[c] = (T)sum[c];
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Separable Gaussian blur for 3D images
+template <typename T>
+void gaussian_blur_3d(const T* input, T* output, int width, int height, int depth, int channels, float sigma) {
+    float kernel[MAX_KERNEL_SIZE];
+    int kernel_radius;
+    generate_gaussian_kernel(sigma, kernel, &kernel_radius);
+    
+    T* temp1 = (T*)malloc(width * height * depth * channels * sizeof(T));
+    T* temp2 = (T*)malloc(width * height * depth * channels * sizeof(T));
+    
+    // X direction pass
+    apply_1d_convolution_3d(input, temp1, width, height, depth, channels, kernel, kernel_radius, 0);
+    
+    // Y direction pass
+    apply_1d_convolution_3d(temp1, temp2, width, height, depth, channels, kernel, kernel_radius, 1);
+    
+    // Z direction pass (only if depth > 1)
+    if (depth > 1) {
+        apply_1d_convolution_3d(temp2, output, width, height, depth, channels, kernel, kernel_radius, 2);
+    } else {
+        memcpy(output, temp2, width * height * depth * channels);
+    }
+    
+    free(temp1);
+    free(temp2);
+}
+
+void high_pass_filter_squared_blurred(const uint8_t* input, float* output, int width, int height, int depth, int channels, float sigma_highpass, float sigma_blur) {
+    size_t pixel_count = width * height * depth;
+    size_t image_size = pixel_count * channels;
+    uint8_t* blurred = (uint8_t*)malloc(image_size);
+    float* squared_diff = (float*)malloc(pixel_count * sizeof(float));
+    
+    // Apply initial Gaussian blur for high-pass filter
+    gaussian_blur_3d(input, blurred, width, height, depth, channels, sigma_highpass);
+    
+    // Calculate squared differences (combined across channels)
+    for (size_t i = 0; i < pixel_count; i++) {
+        float diff_sum = 0;
+        for (int c = 0; c < channels; c++) {
+            float diff = (float)input[i * channels + c] - (float)blurred[i * channels + c];
+            diff_sum += diff * diff;
+        }
+        squared_diff[i] = diff_sum;
+    }
+    
+    // Apply second Gaussian blur to the squared differences
+    gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur);
+    
+    // Map x |-> C1/(C2 + sqrt(x))
+    float C1 = 256.0f;
+    float C2 = 1.0f;
+    float activity_scalar = 2.0f;
+    for (size_t i = 0; i < pixel_count; i++) {
+        output[i] = C1 / (C2 + activity_scalar * sqrtf(output[i]));
+        output[i] = max(output[i], 1.0f);
+    }
+    
+    free(blurred);
+    free(squared_diff);
+}
+
 void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda) {
     if (lambda <= 0.0f) {
         lambda = 10.0f;
@@ -1627,7 +1790,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.25f;
-    float lambda_40 = 0.75f;
+    float lambda_40 = 0.825f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
@@ -1676,6 +1839,22 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         block_info[i].adjusted_lambda_endpoints = adjusted_lambda_endpoints;
     }
 
+    // Calculate the full image dimensions
+    int width = blocks_x * block_width;
+    int height = blocks_y * block_height;
+    int depth = blocks_z * block_depth;
+
+    // Allocate memory for the reconstructed image
+    size_t image_size = width * height * depth * 4;
+    uint8_t* reconstructed_image = (uint8_t*)malloc(image_size);
+    float* high_pass_image = (float*)malloc(width * height * depth * sizeof(float)); // Single channel
+
+    // Reconstruct the image from all_original_decoded
+    reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, block_type, reconstructed_image);
+
+    // Apply high-pass filter with squared differences and additional blur
+    high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 1.0f, 2.0f);
+
     //print_adjusted_lambda_ascii(block_info, 768/block_width, 512/block_height);
 
 
@@ -1690,8 +1869,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     //jeff_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded);
 
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, all_gradients);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, high_pass_image);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, high_pass_image);
 
 #if 0
     // Allocate temporary memory for decompressed data
@@ -1715,10 +1894,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate original MSE
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
         }
         else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
+            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
         }
 
         // Process and recalculate the block
@@ -1730,10 +1909,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate new MSE
         float new_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4);
+            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
         }
         else {
-            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4);
+            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, all_gradients);
         }
 
         // Only accept the changes if the new MSE is better (lower) than the original
@@ -1752,4 +1931,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     free(all_original_decoded);
     free(all_gradients);
     free(original_blocks);
+    free(reconstructed_image);
+    free(high_pass_image);
 }
