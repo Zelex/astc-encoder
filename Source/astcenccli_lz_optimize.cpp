@@ -1325,7 +1325,7 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
     if (depth > 1) {
         apply_1d_convolution_3d(temp2, output, width, height, depth, channels, kernel, kernel_radius, 2);
     } else {
-        memcpy(output, temp2, width * height * depth * channels);
+        memcpy(output, temp2, width * height * depth * channels * sizeof(T));
     }
     
     free(temp1);
@@ -1411,7 +1411,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, block_type, reconstructed_image);
 
     // Apply high-pass filter with squared differences and additional blur
-    high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 1.0f, 2.0f);
+    high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
 
     //jeff_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded);
 
