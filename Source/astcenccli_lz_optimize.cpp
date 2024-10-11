@@ -262,9 +262,10 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 template<typename T1, typename T2>
 static inline float calculate_mse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
     float sum = 0.0f;
+    static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
-        sum += diff * diff * weights[i/4];
+        sum += diff * diff * weights[i/4] * channel_weights[i%4];
     }
     return sum / total;
 }
@@ -654,55 +655,6 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
     free(bsd);
 }
 #endif
-
-template<typename T>
-static void calculate_per_pixel_gradients(const T* img, int width, int height, int depth, int channels, float* gradients) {
-    const int total_pixels = width * height * depth;
-    const float norm_factor = 1.0f / (255.0f * channels);
-
-    // Pre-compute edge weights
-    const float edge_weights[4] = {EDGE_WEIGHT, 1.0f, 1.0f, CORNER_WEIGHT};
-
-    for (int z = 0; z < depth; z++) {
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                float gx = 0.0f, gy = 0.0f, gz = 0.0f;
-                int index = (z * height * width + y * width + x) * channels;
-
-                // Determine edge type (corner, edge, or center)
-                int edge_type = (x == 0 || x == width - 1) + (y == 0 || y == height - 1) + (z == 0 || z == depth - 1);
-
-                for (int c = 0; c < channels; c++) {
-                    // X direction
-                    if (x < width - 1) {
-                        gx += fabsf((float)img[index + channels + c] - (float)img[index + c]);
-                    } else if (x > 0) {
-                        gx += fabsf((float)img[index + c] - (float)img[index - channels + c]);
-                    }
-
-                    // Y direction
-                    if (y < height - 1) {
-                        gy += fabsf((float)img[index + width * channels + c] - (float)img[index + c]);
-                    } else if (y > 0) {
-                        gy += fabsf((float)img[index + c] - (float)img[index - width * channels + c]);
-                    }
-
-                    // Z direction
-                    if (depth > 1) {
-                        if (z < depth - 1) {
-                            gz += fabsf((float)img[index + width * height * channels + c] - (float)img[index + c]);
-                        } else if (z > 0) {
-                            gz += fabsf((float)img[index + c] - (float)img[index - width * height * channels + c]);
-                        }
-                    }
-                }
-
-                float gradient = sqrtf(gx * gx + gy * gy + gz * gz) * norm_factor;
-                gradients[z * height * width + y * width + x] = (1.0f - sigmoid(gradient)) * edge_weights[edge_type];
-            }
-        }
-    }
-}
 
 static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients) {
     const int block_size = 16;
@@ -1355,9 +1307,9 @@ void high_pass_filter_squared_blurred(const uint8_t* input, float* output, int w
     gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur);
     
     // Map x |-> C1/(C2 + sqrt(x))
-    float C1 = 256.0f;
+    float C1 = 256.0f*4;
     float C2 = 1.0f;
-    float activity_scalar = 1.0f;
+    float activity_scalar = 0.75f;
     for (size_t i = 0; i < pixel_count; i++) {
         output[i] = C1 / (C2 + activity_scalar * sqrtf(output[i]));
         output[i] = max(output[i], 1.0f);
@@ -1374,7 +1326,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.025f;
-    float lambda_40 = 0.15f;
+    float lambda_40 = 0.175f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
