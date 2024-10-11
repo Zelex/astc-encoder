@@ -124,8 +124,6 @@
 #define MAX_MTF_SIZE (1024+256+64+16+1)
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 
-static const float BASE_GRADIENT_SCALE = 10.0f;
-static const float GRADIENT_POW = 3.0f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
 static const float SIGMOID_CENTER = 0.1f;
@@ -144,11 +142,6 @@ typedef struct {
     int max_size;
     histo_t histogram;
 } MTF_LL;
-
-typedef struct {
-    float adjusted_lambda_weights;
-    float adjusted_lambda_endpoints;
-} block_info_t;
 
 typedef struct {
     uint8_t encoded[16];
@@ -711,7 +704,7 @@ static void calculate_per_pixel_gradients(const T* img, int width, int height, i
     }
 }
 
-static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, block_info_t* block_info, float* all_gradients) {
+static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients) {
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
     const int max_threads = 8;  // Maximum number of threads
@@ -727,8 +720,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         MTF_LL mtf_endpoints;
 
         // Initialize weight bits table
-        uint8_t* weight_bits = (uint8_t*)malloc(NUM_BLOCK_MODES);
-        for (size_t i = 0; i < NUM_BLOCK_MODES; ++i) {
+        uint8_t* weight_bits = (uint8_t*)malloc(2048);
+        for (size_t i = 0; i < 2048; ++i) {
             uint8_t block[16];
             block[0] = (i & 255);
             block[1] = ((i >> 8) & 255);
@@ -796,8 +789,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
-            float adjusted_lambda_weights = block_info[block_index].adjusted_lambda_weights;
-            float adjusted_lambda_endpoints = block_info[block_index].adjusted_lambda_endpoints;
+            float adjusted_lambda_weights = lambda;
+            float adjusted_lambda_endpoints = lambda;
             float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
                                                 adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
 
@@ -1380,8 +1373,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     }
 
     // Map lambda from [10, 40] to ...
-    float lambda_10 = 0.25f;
-    float lambda_40 = 0.825f;
+    float lambda_10 = 0.025f;
+    float lambda_40 = 0.0825f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
@@ -1393,7 +1386,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     size_t num_blocks = data_len / block_size;
     size_t decoded_block_size = block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
     uint8_t *all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
-    float *all_gradients = (float*)malloc(num_blocks * block_width * block_height * block_depth * sizeof(float));
 
     // Preserve original blocks
     uint8_t *original_blocks = (uint8_t*)malloc(data_len);
@@ -1402,32 +1394,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     for (size_t i = 0; i < num_blocks; i++) {
         uint8_t *original_block = data + i * block_size;
         uint8_t *decoded_block = all_original_decoded + i * decoded_block_size;
-        float *gradients = all_gradients + i * block_width * block_height * block_depth;
-        
         astc_decompress_block(*bsd, original_block, decoded_block, block_width, block_height, block_depth, block_type);
-        
-        if (block_type == ASTCENC_TYPE_U8) {
-            calculate_per_pixel_gradients(decoded_block, block_width, block_height, block_depth, 4, gradients);
-        } else {
-            calculate_per_pixel_gradients((float*)decoded_block, block_width, block_height, block_depth, 4, gradients);
-        }
-    }
-
-    block_info_t* block_info = (block_info_t*)malloc(num_blocks * sizeof(block_info_t));
-    for (size_t i = 0; i < num_blocks; i++) {
-        float *gradients = all_gradients + i * block_width * block_height * block_depth;
-        float avg_gradient = 0.0f;
-        for (int j = 0; j < block_width * block_height * block_depth; j++) {
-            avg_gradient += gradients[j];
-        }
-        avg_gradient /= (block_width * block_height * block_depth);
-
-        float gradient_factor = powf(1 - avg_gradient, GRADIENT_POW) * BASE_GRADIENT_SCALE;
-        float adjusted_lambda_weights = lambda * gradient_factor;
-        float adjusted_lambda_endpoints = lambda * powf(gradient_factor, 0.5f); // Less aggressive adjustment for endpoints
-
-        block_info[i].adjusted_lambda_weights = adjusted_lambda_weights;
-        block_info[i].adjusted_lambda_endpoints = adjusted_lambda_endpoints;
     }
 
     // Calculate the full image dimensions
@@ -1448,8 +1415,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     //jeff_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded);
 
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, high_pass_image);
-    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_info, high_pass_image);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image);
+    dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image);
 
 #if 0
     // Allocate temporary memory for decompressed data
@@ -1508,7 +1475,6 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     // Clean up
     free(bsd);
     free(all_original_decoded);
-    free(all_gradients);
     free(original_blocks);
     free(reconstructed_image);
     free(high_pass_image);
