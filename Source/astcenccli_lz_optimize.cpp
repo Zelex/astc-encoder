@@ -125,7 +125,7 @@
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 
 static const float BASE_GRADIENT_SCALE = 10.0f;
-static const float GRADIENT_POW = 3.0f;
+static const float GRADIENT_POW = 3.5f;
 static const float EDGE_WEIGHT = 2.0f;
 static const float CORNER_WEIGHT = 1.0f;
 static const float SIGMOID_CENTER = 0.1f;
@@ -1627,7 +1627,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.25f;
-    float lambda_40 = 0.5f;
+    float lambda_40 = 0.75f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
