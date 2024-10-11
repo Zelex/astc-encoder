@@ -1632,7 +1632,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
-    init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
+    init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 43, *bsd);
 
     // Calculate gradient magnitudes and adjusted lambdas for all blocks
     const int block_size = 16;

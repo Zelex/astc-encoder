@@ -61,8 +61,11 @@ struct astcenc_preset_config
 /**
  * @brief The static presets for high bandwidth encodings (x < 25 texels per block).
  */
-static const std::array<astcenc_preset_config, 6> preset_configs_high {{
+static const std::array<astcenc_preset_config, 7> preset_configs_high {{
 	{
+		ASTCENC_PRE_RDO,
+		4, 512, 512, 512, 1, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 0.0f
+	}, {
 		ASTCENC_PRE_FASTEST,
 		2, 10, 6, 4, 43, 2, 2, 2, 2, 2, 85.2f, 63.2f, 3.5f, 1.0f, 1.0f, 0.85f, 0.0f
 	}, {
@@ -86,8 +89,11 @@ static const std::array<astcenc_preset_config, 6> preset_configs_high {{
 /**
  * @brief The static presets for medium bandwidth encodings (25 <= x < 64 texels per block).
  */
-static const std::array<astcenc_preset_config, 6> preset_configs_mid {{
+static const std::array<astcenc_preset_config, 7> preset_configs_mid {{
 	{
+		ASTCENC_PRE_RDO,
+		4, 256, 256, 256, 1, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 0.0f
+	}, {
 		ASTCENC_PRE_FASTEST,
 		2, 10, 6, 4, 43, 2, 2, 2, 2, 2, 85.2f, 63.2f, 3.5f, 1.0f, 1.0f, 0.80f, 1.0f
 	}, {
@@ -111,8 +117,11 @@ static const std::array<astcenc_preset_config, 6> preset_configs_mid {{
 /**
  * @brief The static presets for low bandwidth encodings (64 <= x texels per block).
  */
-static const std::array<astcenc_preset_config, 6> preset_configs_low {{
+static const std::array<astcenc_preset_config, 7> preset_configs_low {{
 	{
+		ASTCENC_PRE_RDO,
+		4, 256, 256, 256, 1, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 1.0f
+	}, {
 		ASTCENC_PRE_FASTEST,
 		2, 10, 6, 4, 40, 2, 2, 2, 2, 2, 85.0f, 63.0f, 3.5f, 1.0f, 1.0f, 0.80f, 1.0f
 	}, {
@@ -472,13 +481,13 @@ astcenc_error astcenc_config_init(
 	// Process the performance quality level or preset; note that this must be done before we
 	// process any additional settings, such as color profile and flags, which may replace some of
 	// these settings with more use case tuned values
-	if (quality < ASTCENC_PRE_FASTEST ||
+	if (quality < ASTCENC_PRE_RDO ||
 	    quality > ASTCENC_PRE_EXHAUSTIVE)
 	{
 		return ASTCENC_ERR_BAD_QUALITY;
 	}
 
-	static const std::array<astcenc_preset_config, 6>* preset_configs;
+	static const std::array<astcenc_preset_config, 7>* preset_configs;
 	int texels_int = block_x * block_y * block_z;
 	if (texels_int < 25)
 	{

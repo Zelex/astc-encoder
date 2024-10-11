@@ -66,7 +66,7 @@ configure the compressor for HDR RGB components and an LDR alpha component.
 The -*H options configure the compressor for HDR across all 4 components.
 
 Additional options:
-  -lz                   : Optimize compressed output for LZ compression
+  -rdo-lambda               : Optimize compressed output for LZ compression
 
 For full help documentation run 'astcenc -help'.
 )";
@@ -452,7 +452,7 @@ R"(
            always output image quality metrics and compression time but
            will suppress all other output.
           
-       -lz
+       -rdo-lambda
            Optimize the compressed output for better LZ compression. This
            reorders the compressed blocks to improve compressibility, which
            may be beneficial when further compressing the ASTC data.)"

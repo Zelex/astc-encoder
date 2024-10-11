@@ -237,6 +237,9 @@ enum astcenc_profile {
 	ASTCENC_PRF_HDR
 };
 
+/** @brief The preset used for RDO encoding. */
+static const float ASTCENC_PRE_RDO = -1.0f;
+
 /** @brief The fastest, lowest quality, search preset. */
 static const float ASTCENC_PRE_FASTEST = 0.0f;
 

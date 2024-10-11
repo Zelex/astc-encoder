@@ -546,7 +546,11 @@ static int init_astcenc_config(
 			return 1;
 		}
 
-		if (!strcmp(argv[5], "-fastest"))
+		if (!strcmp(argv[5], "-rdo"))
+		{
+			quality = ASTCENC_PRE_RDO;
+		}
+		else if (!strcmp(argv[5], "-fastest"))
 		{
 			quality = ASTCENC_PRE_FASTEST;
 		}
@@ -1183,19 +1187,15 @@ static int edit_astcenc_config(
 			argidx += 1;
 			cli_config.diagnostic_images = true;
 		}
-		else if (!strcmp(argv[argidx], "-lz"))
-		{
-			argidx++;
-			cli_config.lz_optimize = true;
-		}
-		else if (!strcmp(argv[argidx], "-rdo"))
+		else if (!strcmp(argv[argidx], "-rdo-lambda"))
 		{
 			argidx += 2;
 			if (argidx > argc)
 			{
-				print_error("ERROR: -rdo switch with no argument\n");
+				print_error("ERROR: -rdo-lambda switch with no argument\n");
 				return 1;
 			}
+			cli_config.lz_optimize = true;
 			cli_config.lz_optimize_rdo = (float)atof(argv[argidx - 1]);
 		}
 		else // check others as well
