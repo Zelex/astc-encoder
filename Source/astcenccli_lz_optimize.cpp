@@ -1337,7 +1337,7 @@ void high_pass_filter_squared_blurred(const uint8_t* input, float* output, int w
     gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur);
     
     // Map x |-> C1/(C2 + sqrt(x))
-    float C1 = 256.0f*4;
+    float C1 = 256.0f;
     float C2 = 1.0f;
     float activity_scalar = 4.f;
     for (size_t i = 0; i < pixel_count; i++) {
@@ -1356,7 +1356,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.025f;
-    float lambda_40 = 4.0f;
+    float lambda_40 = 1.25f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
