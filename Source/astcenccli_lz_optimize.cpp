@@ -253,11 +253,26 @@ static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
 static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
     if (mtf_value == mtf->size) {
-        return 1.f + histo_cost(&mtf->histogram, literal_value, mask);
+        return 8.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
 }
+ 
+ // calculates the bit cost of a literal + mtf value, where you have two different mtf_values, it chooses the lesser of the two.
+ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, int128_t literal_value, MTF_LL* mtf_1, MTF_LL* mtf_2, int128_t mask_1, int128_t mask_2) {
+    if (mtf_value_1 == mtf_1->size && mtf_value_2 == mtf_2->size) {
+        return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+    } else if (mtf_value_1 == mtf_1->size) {
+        return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+    } else if (mtf_value_2 == mtf_2->size) {
+        return 8.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+    } else {
+        float cost_1 = 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+        float cost_2 = 8.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+        return cost_1 < cost_2 ? cost_1 : cost_2;
+    }
+ }
 
 template<typename T1, typename T2>
 static inline float calculate_mse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
@@ -741,10 +756,10 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
-            float adjusted_lambda_weights = lambda;
-            float adjusted_lambda_endpoints = lambda;
-            float best_rd_cost = original_mse + adjusted_lambda_weights * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
-                                                adjusted_lambda_endpoints * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
+            //float best_rd_cost = original_mse + lambda * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
+                                                //lambda * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
+        //return 10.f + log2_fast((float)(mtf_value_1 + 32)) + log2_fast((float)(mtf_value_2 + 32));
+            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
             struct Candidate {
                 int128_t bits;
@@ -768,8 +783,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 
                 float mse = get_or_compute_mse(candidate_endpoints);
 
-                float bit_cost = adjusted_lambda_endpoints * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
-                float rd_cost = mse + bit_cost;
+                float bit_cost = lambda * calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
+                float rd_cost = mse + lambda * bit_cost;
 
                 // Insert into best_endpoints if it's one of the best candidates
                 if (endpoints_count < best_candidates_count || rd_cost < best_endpoints[best_candidates_count - 1].rd_cost) {
@@ -822,7 +837,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                 }
 
-                float bit_cost = adjusted_lambda_weights * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
+                float bit_cost = lambda * calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
                 float rd_cost = mse + bit_cost;
 
                 // Insert into best_weights if it's one of the best candidates
@@ -870,8 +885,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                         mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
-                    float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                        adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+                    //float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                        //adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+                    float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
                     if (rd_cost < best_rd_cost) {
                         best_match = *temp_bits;
@@ -900,8 +916,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                         mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
-                    rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                    adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+                    //rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
+                                    //adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
+                    rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
                     if (rd_cost < best_rd_cost) {
                         best_match = *temp_bits;
@@ -1326,7 +1343,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.025f;
-    float lambda_40 = 0.2f;
+    float lambda_40 = 0.3f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
