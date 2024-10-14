@@ -129,7 +129,7 @@ static const float CORNER_WEIGHT = 1.0f;
 static const float SIGMOID_CENTER = 0.1f;
 static const float SIGMOID_STEEPNESS = 20.0f;
 
-#define ERROR_FN calculate_mse_weighted
+#define ERROR_FN calculate_ssd_weighted
 
 typedef struct {
     int h[256];
@@ -278,11 +278,24 @@ template<typename T1, typename T2>
 static inline float calculate_mse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
     float sum = 0.0f;
     static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
+    //static const float channel_weights[4] = {0.25f, 0.25f, 0.25f, 0.25f};  // R, G, B, A weights (for normal maps)
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
         sum += diff * diff * weights[i/4] * channel_weights[i%4];
     }
     return sum / total;
+}
+
+template<typename T1, typename T2>
+static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
+    float sum = 0.0f;
+    static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
+    //static const float channel_weights[4] = {0.25f, 0.25f, 0.25f, 0.25f};  // R, G, B, A weights (for normal maps)
+    for (int i = 0; i < total; i++) {
+        float diff = (float)img1[i] - (float)img2[i];
+        sum += diff * diff * weights[i/4] * channel_weights[i%4];
+    }
+    return sum;
 }
 
 static void astc_decompress_block(
@@ -1343,7 +1356,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
 
     // Map lambda from [10, 40] to ...
     float lambda_10 = 0.025f;
-    float lambda_40 = 0.3f;
+    float lambda_40 = 20.0f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 
     // Initialize block_size_descriptor once
