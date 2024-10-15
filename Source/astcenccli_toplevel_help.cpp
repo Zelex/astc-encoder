@@ -144,13 +144,13 @@ COMPRESSION
        can be set to any value between 0 (fastest) and 100 (exhaustive),
        or to a fixed quality preset:
 
-           -rdo          (equivalent to quality =  -1)
            -fastest      (equivalent to quality =   0)
            -fast         (equivalent to quality =  10)
            -medium       (equivalent to quality =  60)
            -thorough     (equivalent to quality =  98)
            -verythorough (equivalent to quality =  99)
            -exhaustive   (equivalent to quality = 100)
+           -rdo          (equivalent to quality =  -1)
 
        For compression of production content we recommend using a quality
        level equivalent to -medium or higher.
@@ -290,6 +290,7 @@ ADVANCED COMPRESSION
                -thorough     : 4
                -verythorough : 4
                -exhaustive   : 4
+               -rdo          : 4
 
        -[2|3|4]partitionindexlimit <number>
            Estimate errors for <number> block partition indices for this
@@ -303,6 +304,7 @@ ADVANCED COMPRESSION
                -thorough     :   82 |  60 |  30
                -verythorough :  256 | 128 |  64
                -exhaustive   :  512 | 512 | 512
+               -rdo          :  512 | 512 | 512
 
        -[2|3|4]partitioncandidatelimit <number>
            Calculate errors for <number> block partition indices for this
@@ -316,6 +318,7 @@ ADVANCED COMPRESSION
                -thorough     :   3 |  2 |  2
                -verythorough :  20 | 14 |  8
                -exhaustive   :  32 | 32 | 32
+               -rdo          :  32 | 32 | 32
 
        -blockmodelimit <number>
            Test block modes below <number> usage centile in an empirically
@@ -328,6 +331,7 @@ ADVANCED COMPRESSION
                -thorough     :  94
                -verythorough :  98
                -exhaustive   : 100
+               -rdo          :   1 | 43 | 43
 
        -refinementlimit <number>
            Iterate <number> refinement iterations on colors and
@@ -339,6 +343,7 @@ ADVANCED COMPRESSION
                -thorough     : 4
                -verythorough : 4
                -exhaustive   : 4
+               -rdo          : 4
 
        -candidatelimit <number>
            Trial <number> candidate encodings for each block mode:
@@ -349,6 +354,7 @@ ADVANCED COMPRESSION
                -thorough     : 4
                -verythorough : 6
                -exhaustive   : 8
+               -rdo          : 8
 
        -dblimit <number>
            Stop compression work on a block as soon as the PSNR of the
@@ -362,6 +368,7 @@ ADVANCED COMPRESSION
                -thorough     : MAX(77-19*log10(N), 105-35*log10(N))
                -verythorough : 999
                -exhaustive   : 999
+               -rdo          : 999
 
        -[2|3]partitionlimitfactor <factor>
            Stop compression work on a block after only testing blocks with
@@ -376,6 +383,7 @@ ADVANCED COMPRESSION
                -thorough      : 1.35 | 1.15
                -verythrorough : 1.60 | 1.40
                -exhaustive    : 2.00 | 2.00
+               -rdo           : 2.00 | 2.00
 
        -2planelimitcorrelation <factor>
            Stop compression after testing only one plane of weights, unless
@@ -389,6 +397,7 @@ ADVANCED COMPRESSION
                -thorough     : 0.95
                -verythorough : 0.98
                -exhaustive   : 0.99
+               -rdo          : 0.99
 )"
 // This split in the literals is needed for Visual Studio; the compiler
 // will concatenate these two strings together ...
