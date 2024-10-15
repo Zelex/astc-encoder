@@ -766,11 +766,11 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             // Find best endpoint candidates
             for (int k = 0; k < mtf_endpoints.size; k++) {
                 int128_t candidate_endpoints = mtf_endpoints.list[k];
-                //int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-                //int endpoints_weight_bits = weight_bits[endpoints_mode];
-                //if (endpoints_weight_bits < current_weight_bits) {
-                    //continue;
-                //}
+                int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
+                int endpoints_weight_bits = weight_bits[endpoints_mode];
+                if (endpoints_weight_bits < 24 && endpoints_weight_bits > 0) { // Not worth a kraken match
+                    continue;
+                }
                 
                 float mse = get_or_compute_mse(candidate_endpoints);
 
