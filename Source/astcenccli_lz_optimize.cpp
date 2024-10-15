@@ -771,6 +771,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 if (endpoints_weight_bits < 24 && endpoints_weight_bits > 0) { // Not worth a kraken match
                     continue;
                 }
+                if (endpoints_weight_bits < current_weight_bits) {
+                    continue;
+                }
                 
                 float mse = get_or_compute_mse(candidate_endpoints);
 
