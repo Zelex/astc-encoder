@@ -453,7 +453,7 @@ R"(
            always output image quality metrics and compression time but
            will suppress all other output.
           
-       -rdo-lambda
+       -rdo-lambda <lambda 0..100, 0 means default of 10>
            Optimize the compressed output for better LZ compression. This
            reorders the compressed blocks to improve compressibility, which
            may be beneficial when further compressing the ASTC data.)"
