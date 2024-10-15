@@ -756,8 +756,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             int endpoints_count = 0;
 
             // Add the current block to the candidates
-            best_weights[0] = {current_bits, original_mse, -1};
-            best_endpoints[0] = {current_bits, original_mse, -1};
+            best_weights[0] = {current_bits, original_mse + lambda * calculate_bit_cost(-1, current_bits, &mtf_weights, weights_mask), -1};
+            best_endpoints[0] = {current_bits, original_mse + lambda * calculate_bit_cost(-1, current_bits, &mtf_endpoints, endpoints_mask), -1};
             weights_count = 1;
             endpoints_count = 1;
 
