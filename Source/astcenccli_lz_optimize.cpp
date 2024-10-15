@@ -269,18 +269,6 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, mtf_t* mt
 }
 
 template<typename T1, typename T2>
-static inline float calculate_mse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
-    float sum = 0.0f;
-    static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
-    //static const float channel_weights[4] = {0.25f, 0.25f, 0.25f, 0.25f};  // R, G, B, A weights (for normal maps)
-    for (int i = 0; i < total; i++) {
-        float diff = (float)img1[i] - (float)img2[i];
-        sum += diff * diff * weights[i/4] * channel_weights[i%4];
-    }
-    return sum / total;
-}
-
-template<typename T1, typename T2>
 static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
     float sum = 0.0f;
     static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
