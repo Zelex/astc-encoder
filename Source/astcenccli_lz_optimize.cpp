@@ -123,12 +123,6 @@
 //#define MAX_MTF_SIZE (256+64+16+1)
 #define MAX_MTF_SIZE (1024+256+64+16+1)
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
-
-static const float EDGE_WEIGHT = 2.0f;
-static const float CORNER_WEIGHT = 1.0f;
-static const float SIGMOID_CENTER = 0.1f;
-static const float SIGMOID_STEEPNESS = 20.0f;
-
 #define ERROR_FN calculate_ssd_weighted
 
 typedef struct {
@@ -141,17 +135,16 @@ typedef struct {
     int size;
     int max_size;
     histo_t histogram;
-} MTF_LL;
+} mtf_t;
 
 typedef struct {
     uint8_t encoded[16];
     uint8_t decoded[6 * 6 * 6 * 4 * 4];  // Max size for both U8 and float types
     bool valid;
-} CachedBlock;
+} cached_block_t;
 
 template<typename T> static inline T max(T a, T b) { return a > b ? a : b; }
 template<typename T> static inline T min(T a, T b) { return a < b ? a : b; }
-static float sigmoid(float x) { return 1.0f / (1.0f + expf(-SIGMOID_STEEPNESS * (x - SIGMOID_CENTER))); }
 
 static inline float log2_fast(float val) {
     union { float val; int x; } u = { val };
@@ -205,14 +198,14 @@ static float histo_cost(histo_t *h, int128_t value, int128_t mask) {
     return count > 0 ? log2_fast(cost) : 0.0f;
 }
 
-static void mtf_ll_init(MTF_LL* mtf, int max_size) {
+static void mtf_init(mtf_t* mtf, int max_size) {
     mtf->size = 0;
     mtf->max_size = max_size > MAX_MTF_SIZE ? MAX_MTF_SIZE : max_size;
     histo_reset(&mtf->histogram);
 }
 
 // Search for a value in the MTF list
-static int mtf_ll_search(MTF_LL* mtf, int128_t value, int128_t mask) {
+static int mtf_search(mtf_t* mtf, int128_t value, int128_t mask) {
     value = bitwise_and(value, mask);
     for (int i = 0; i < mtf->size; i++) {
         if (is_equal(bitwise_and(mtf->list[i], mask), value)) {
@@ -222,8 +215,8 @@ static int mtf_ll_search(MTF_LL* mtf, int128_t value, int128_t mask) {
     return -1;
 }
 
-static int mtf_ll_encode(MTF_LL* mtf, int128_t value, int128_t mask) {
-    int pos = mtf_ll_search(mtf, value, mask);
+static int mtf_encode(mtf_t* mtf, int128_t value, int128_t mask) {
+    int pos = mtf_search(mtf, value, mask);
     
     if (pos == -1) {
         // Value not found, add it to the front
@@ -242,15 +235,15 @@ static int mtf_ll_encode(MTF_LL* mtf, int128_t value, int128_t mask) {
     return pos;
 }
 
-static int mtf_ll_peek_position(MTF_LL* mtf, int128_t value, int128_t mask) {
-    int pos = mtf_ll_search(mtf, value, mask);
+static int mtf_peek_position(mtf_t* mtf, int128_t value, int128_t mask) {
+    int pos = mtf_search(mtf, value, mask);
     if (pos != -1) {
         return pos;
     }
     return mtf->size; // Return size if not found (which would be its position if added)
 }
 
-static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* mtf, int128_t mask) {
+static float calculate_bit_cost(int mtf_value, int128_t literal_value, mtf_t* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
     if (mtf_value == mtf->size) {
         return 8.f + histo_cost(&mtf->histogram, literal_value, mask);
@@ -260,7 +253,7 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, MTF_LL* m
 }
  
  // calculates the bit cost of a literal + mtf value, where you have two different mtf_values, it chooses the lesser of the two.
- static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, int128_t literal_value, MTF_LL* mtf_1, MTF_LL* mtf_2, int128_t mask_1, int128_t mask_2) {
+ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, int128_t literal_value, mtf_t* mtf_1, mtf_t* mtf_2, int128_t mask_1, int128_t mask_2) {
     if (mtf_value_1 == mtf_1->size && mtf_value_2 == mtf_2->size) {
         return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
     } else if (mtf_value_1 == mtf_1->size) {
@@ -695,9 +688,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
     auto thread_function = [&](size_t start_block, size_t end_block) {
         uint8_t *modified_decoded = (uint8_t*)malloc(6 * 6 * 6 * 4 * 4);
-        CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
-        MTF_LL mtf_weights;
-        MTF_LL mtf_endpoints;
+        cached_block_t* block_cache = (cached_block_t*)calloc(CACHE_SIZE, sizeof(cached_block_t));
+        mtf_t mtf_weights;
+        mtf_t mtf_endpoints;
 
         // Initialize weight bits table
         uint8_t* weight_bits = (uint8_t*)malloc(2048);
@@ -719,8 +712,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             if (WEIGHT_BITS == 0) {
                 histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
                 histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-                mtf_ll_encode(&mtf_weights, best_match, create_from_int(0));
-                mtf_ll_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
+                mtf_encode(&mtf_weights, best_match, create_from_int(0));
+                mtf_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
                 return; // Constant color block, skip
             }
 
@@ -769,10 +762,7 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
-            //float best_rd_cost = original_mse + lambda * calculate_bit_cost(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), current_bits, &mtf_weights, weights_mask) +
-                                                //lambda * calculate_bit_cost(mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_endpoints, endpoints_mask);
-        //return 10.f + log2_fast((float)(mtf_value_1 + 32)) + log2_fast((float)(mtf_value_2 + 32));
-            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_ll_peek_position(&mtf_weights, current_bits, weights_mask), mtf_ll_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_peek_position(&mtf_weights, current_bits, weights_mask), mtf_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
             struct Candidate {
                 int128_t bits;
@@ -898,8 +888,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                         mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
-                    //float rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                        //adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
                     float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
                     if (rd_cost < best_rd_cost) {
@@ -929,8 +917,6 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                         mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
-                    //rd_cost = mse + adjusted_lambda_weights * calculate_bit_cost(best_weights[i].mtf_position, *temp_bits, &mtf_weights, weights_mask) +
-                                    //adjusted_lambda_endpoints * calculate_bit_cost(best_endpoints[j].mtf_position, *temp_bits, &mtf_endpoints, endpoints_mask);
                     rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
                     if (rd_cost < best_rd_cost) {
@@ -952,22 +938,22 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
             histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
             histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-            mtf_ll_encode(&mtf_weights, best_match, best_weights_mask); 
-            mtf_ll_encode(&mtf_endpoints, best_match, best_endpoints_mask);
+            mtf_encode(&mtf_weights, best_match, best_weights_mask); 
+            mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
         };
 
         int mtf_size = MAX_MTF_SIZE;
 
         // Backward pass
-        mtf_ll_init(&mtf_weights, mtf_size);
-        mtf_ll_init(&mtf_endpoints, mtf_size);
+        mtf_init(&mtf_weights, mtf_size);
+        mtf_init(&mtf_endpoints, mtf_size);
         for (size_t i = end_block; i-- > start_block;) {
             process_block(i);
         }
 
         // Forward pass
-        mtf_ll_init(&mtf_weights, mtf_size);
-        mtf_ll_init(&mtf_endpoints, mtf_size);
+        mtf_init(&mtf_weights, mtf_size);
+        mtf_init(&mtf_endpoints, mtf_size);
         for (size_t i = start_block; i < end_block; i++) {
             process_block(i);
         }
