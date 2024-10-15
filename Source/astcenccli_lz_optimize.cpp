@@ -236,17 +236,9 @@ static int mtf_encode(mtf_t* mtf, int128_t value, int128_t mask) {
     return pos;
 }
 
-static int mtf_peek_position(mtf_t* mtf, int128_t value, int128_t mask) {
-    int pos = mtf_search(mtf, value, mask);
-    if (pos != -1) {
-        return pos;
-    }
-    return mtf->size; // Return size if not found (which would be its position if added)
-}
-
 static float calculate_bit_cost(int mtf_value, int128_t literal_value, mtf_t* mtf, int128_t mask) {
     literal_value = bitwise_and(literal_value, mask);
-    if (mtf_value == mtf->size) {
+    if (mtf_value == -1) {
         return 8.f + histo_cost(&mtf->histogram, literal_value, mask);
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
@@ -255,11 +247,11 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, mtf_t* mt
  
  // calculates the bit cost of a literal + mtf value, where you have two different mtf_values, it chooses the lesser of the two.
  static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, int128_t literal_value, mtf_t* mtf_1, mtf_t* mtf_2, int128_t mask_1, int128_t mask_2) {
-    if (mtf_value_1 == mtf_1->size && mtf_value_2 == mtf_2->size) {
+    if (mtf_value_1 == -1 && mtf_value_2 == -1) {
         return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
-    } else if (mtf_value_1 == mtf_1->size) {
+    } else if (mtf_value_1 == -1) {
         return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
-    } else if (mtf_value_2 == mtf_2->size) {
+    } else if (mtf_value_2 == -1) {
         return 8.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
     } else {
         float cost_1 = 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
@@ -751,17 +743,23 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
-            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_peek_position(&mtf_weights, current_bits, weights_mask), mtf_peek_position(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_search(&mtf_weights, current_bits, weights_mask), mtf_search(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
-            struct Candidate {
+            struct candidate_t {
                 int128_t bits;
                 float rd_cost;
                 int mtf_position;
             };
-            Candidate best_weights[BEST_CANDIDATES_COUNT];
-            Candidate best_endpoints[BEST_CANDIDATES_COUNT];
+            candidate_t best_weights[BEST_CANDIDATES_COUNT];
+            candidate_t best_endpoints[BEST_CANDIDATES_COUNT];
             int weights_count = 0;
             int endpoints_count = 0;
+
+            // Add the current block to the candidates
+            best_weights[0] = {current_bits, original_mse, -1};
+            best_endpoints[0] = {current_bits, original_mse, -1};
+            weights_count = 1;
+            endpoints_count = 1;
 
             // Find best endpoint candidates
             for (int k = 0; k < mtf_endpoints.size; k++) {
