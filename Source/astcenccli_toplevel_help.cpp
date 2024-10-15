@@ -144,6 +144,7 @@ COMPRESSION
        can be set to any value between 0 (fastest) and 100 (exhaustive),
        or to a fixed quality preset:
 
+           -rdo          (equivalent to quality =  -1)
            -fastest      (equivalent to quality =   0)
            -fast         (equivalent to quality =  10)
            -medium       (equivalent to quality =  60)
