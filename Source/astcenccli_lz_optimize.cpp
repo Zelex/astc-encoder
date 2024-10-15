@@ -275,7 +275,7 @@ static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int t
     //static const float channel_weights[4] = {0.25f, 0.25f, 0.25f, 0.25f};  // R, G, B, A weights (for normal maps)
     for (int i = 0; i < total; i++) {
         float diff = (float)img1[i] - (float)img2[i];
-        sum += diff * diff * weights[i/4] * channel_weights[i%4];
+        sum += diff * diff * weights[i/4] * channel_weights[i&3];
     }
     return sum;
 }
