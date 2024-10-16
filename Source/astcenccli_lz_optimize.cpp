@@ -120,8 +120,8 @@
     #error "No 128-bit integer type available for this platform"
 #endif
 
-//#define MAX_MTF_SIZE (256+64+16+1)
-#define MAX_MTF_SIZE (1024+256+64+16+1)
+#define MAX_MTF_SIZE (256+64+16+1)
+//#define MAX_MTF_SIZE (1024+256+64+16+1)
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (8)
 
