@@ -1,6 +1,9 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 #include <stdlib.h>
 #include <math.h>
 #include <immintrin.h> // For SSE intrinsics
@@ -243,8 +246,8 @@ static float calculate_bit_cost(int mtf_value, int128_t literal_value, mtf_t* mt
     } else {
         return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
     }
-}
- 
+} 
+
  // calculates the bit cost of a literal + mtf value, where you have two different mtf_values, it chooses the lesser of the two.
  static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, int128_t literal_value, mtf_t* mtf_1, mtf_t* mtf_2, int128_t mask_1, int128_t mask_2) {
     if (mtf_value_1 == -1 && mtf_value_2 == -1) {
@@ -673,13 +676,18 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
+// Define a work item structure
+struct WorkItem {
+    size_t start_block;
+    size_t end_block;
+    bool is_forward;
+};
+
 static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients) {
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
-    const int blocks_per_thread = (int)((num_blocks + MAX_THREADS - 1) / MAX_THREADS);
-    const int num_threads = min(MAX_THREADS, (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread));
-
-    std::vector<std::thread> threads;
+    const int max_blocks_per_item = 8192;
+    const int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
 
     // Initialize weight bits table
     uint8_t* weight_bits = (uint8_t*)malloc(2048);
@@ -690,28 +698,28 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
         weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
     }
 
-    auto thread_function = [&](size_t start_block, size_t end_block) {
+    std::queue<WorkItem> work_queue;
+    std::mutex queue_mutex;
+    std::condition_variable cv;
+    bool all_work_done = false;
+
+    auto thread_function = [&]() {
         uint8_t modified_decoded[6*6*6*4*4];
         cached_block_t* block_cache = (cached_block_t*)calloc(CACHE_SIZE, sizeof(cached_block_t));
         mtf_t mtf_weights;
         mtf_t mtf_endpoints;
 
+        mtf_init(&mtf_weights, MAX_MTF_SIZE);
+        mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
+
         // Helper function to process a single block
-        auto process_block = [&](size_t block_index) {
+        auto process_block = [&](size_t block_index, bool is_forward) {
             uint8_t *current_block = data + block_index * block_size;
             int128_t current_bits = *((int128_t*)current_block);
             int128_t best_match = current_bits;
 
             int mode = ((uint16_t*)current_block)[0] & 0x7ff;
             int current_weight_bits = weight_bits[mode];
-            if (current_weight_bits == 0) {
-                histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
-                histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
-                mtf_encode(&mtf_weights, best_match, create_from_int(0));
-                mtf_encode(&mtf_endpoints, best_match, bitwise_not(create_from_int(0)));
-                return; // Constant color block, skip
-            }
-
             int128_t one = create_from_int(1);
             int128_t weights_mask = shift_left(subtract(shift_left(one, current_weight_bits), one), 128 - current_weight_bits);
             int128_t endpoints_mask = bitwise_not(weights_mask);
@@ -947,34 +955,74 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
         };
 
-        int mtf_size = MAX_MTF_SIZE;
+        while (true) {
+            WorkItem work_item;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex);
+                cv.wait(lock, [&]() { return !work_queue.empty() || all_work_done; });
+                if (all_work_done && work_queue.empty()) {
+                    free(block_cache);
+                    return;
+                }
+                if (!work_queue.empty()) {
+                    work_item = work_queue.front();
+                    work_queue.pop();
+                }
+            }
 
-        // Backward pass
-        mtf_init(&mtf_weights, mtf_size);
-        mtf_init(&mtf_endpoints, mtf_size);
-        for (size_t i = end_block; i-- > start_block;) {
-            process_block(i);
-        }
+            // Reset MTF structures for each work item
+            mtf_init(&mtf_weights, MAX_MTF_SIZE);
+            mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
 
-        // Forward pass
-        mtf_init(&mtf_weights, mtf_size);
-        mtf_init(&mtf_endpoints, mtf_size);
-        for (size_t i = start_block; i < end_block; i++) {
-            process_block(i);
+            // Process the work item
+            if (work_item.is_forward) {
+                for (size_t i = work_item.start_block; i < work_item.end_block; i++) {
+                    process_block(i, true);
+                }
+            } else {
+                for (size_t i = work_item.end_block; i-- > work_item.start_block;) {
+                    process_block(i, false);
+                }
+            }
         }
     };
 
-    // Start threads
-    for (int i = 0; i < num_threads; ++i) {
-        size_t start_block = i * blocks_per_thread;
-        size_t end_block = min((i + 1) * blocks_per_thread, (int)num_blocks);
-        threads.emplace_back(thread_function, start_block, end_block);
-    }
+    // Function to run a single pass (backward or forward)
+    auto run_pass = [&](bool is_forward) {
+        // Fill the work queue
+        for (size_t start_block = 0; start_block < num_blocks; start_block += max_blocks_per_item) {
+            size_t end_block = std::min(start_block + max_blocks_per_item, num_blocks);
+            work_queue.push({start_block, end_block, is_forward});
+        }
 
-    // Wait for all threads to finish
-    for (auto& thread : threads) {
-        thread.join();
-    }
+        std::vector<std::thread> threads;
+
+        // Start threads
+        for (int i = 0; i < num_threads; ++i) {
+            threads.emplace_back(thread_function);
+        }
+
+        // Wait for all threads to finish
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            all_work_done = true;
+        }
+        cv.notify_all();
+
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        // Reset for next pass
+        all_work_done = false;
+        work_queue = std::queue<WorkItem>();
+    };
+
+    // Run backward pass
+    run_pass(false);
+
+    // Run forward pass
+    run_pass(true);
 
     free(weight_bits);
 }
@@ -1146,6 +1194,9 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     if(lambda <= 0) {
         lambda = 0;
     }
+
+    float lambda_scale = (block_width*block_height*block_depth) / 16.f;
+    lambda *= lambda_scale;
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
