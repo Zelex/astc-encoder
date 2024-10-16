@@ -123,7 +123,6 @@
 //#define MAX_MTF_SIZE (256+64+16+1)
 #define MAX_MTF_SIZE (1024+256+64+16+1)
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
-#define ERROR_FN calculate_ssd_weighted
 #define BEST_CANDIDATES_COUNT (8)
 
 typedef struct {
@@ -270,6 +269,20 @@ static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int t
         sum += diff * diff * weights[i>>2] * channel_weights[i&3];
     }
     return sum;
+}
+
+template<typename T1, typename T2>
+static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int total, const float* weights) {
+    float sum = 0.0f;
+    static const float channel_weights[4] = {0.299f, 0.587f, 0.114f, 1.0f};  // R, G, B, A weights
+    //static const float channel_weights[4] = {0.25f, 0.25f, 0.25f, 0.25f};  // R, G, B, A weights (for normal maps)
+    for (int i = 0; i < total; i++) {
+        float A = (float)img1[i];
+        float B = (float)img2[i];
+        float diff = A - B;
+        sum += (diff * diff) / (A*A + B*B) * weights[i>>2] * channel_weights[i&3];
+    }
+    return sum * 65536.f;
 }
 
 static void astc_decompress_block(
@@ -712,9 +725,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 if (block_cache[hash].valid && is_equal(*((int128_t*)block_cache[hash].encoded), candidate_bits)) {
                     // Compute MSE using cached decoded data
                     if (block_type == ASTCENC_TYPE_U8) {
-                        return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
+                        return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
+                        return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
                 }
 
@@ -728,9 +741,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 block_cache[hash].valid = true;
 
                 if (block_type == ASTCENC_TYPE_U8) {
-                    return ERROR_FN(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
+                    return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                 } else {
-                    return ERROR_FN((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
+                    return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width*block_height*block_depth*4, all_gradients);
                 }
             };
 
@@ -738,9 +751,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
             float original_mse;
             if (block_type == ASTCENC_TYPE_U8) {
-                original_mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                original_mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             } else {
-                original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                original_mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
             int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
@@ -826,9 +839,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
                 float mse;
                 if (block_type == ASTCENC_TYPE_U8) {
-                    mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                    mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                 } else {
-                    mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                    mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                 }
 
                 float bit_cost = calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
@@ -874,9 +887,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
 
                     float mse;
                     if (block_type == ASTCENC_TYPE_U8) {
-                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                        mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                        mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
                     float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
@@ -903,9 +916,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                     astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
                     if (block_type == ASTCENC_TYPE_U8) {
-                        mse = ERROR_FN(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                        mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     } else {
-                        mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
+                        mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
                     }
 
                     rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, *temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
@@ -1197,10 +1210,10 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate original MSE
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            original_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
+            original_mse = calculate_ssd_weighted(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
         else {
-            original_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
+            original_mse = calculate_mrsse_weighted((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
 
         // Process and recalculate the block
@@ -1212,10 +1225,9 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         // Calculate new MSE
         float new_mse;
         if (block_type == ASTCENC_TYPE_U8) {
-            new_mse = ERROR_FN(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
-        }
-        else {
-            new_mse = ERROR_FN((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
+            new_mse = calculate_ssd_weighted(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
+        } else {
+            new_mse = calculate_mrsse_weighted((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
 
         // Only accept the changes if the new MSE is better (lower) than the original
