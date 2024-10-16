@@ -281,8 +281,9 @@ static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int
         float B = (float)img2[i];
         float diff = A - B;
         sum += (diff * diff) / (A*A + B*B) * weights[i>>2] * channel_weights[i&3];
+        //sum += diff * diff * weights[i>>2] * channel_weights[i&3];
     }
-    return sum * 65536.f;
+    return sum * 256.f;
 }
 
 static void astc_decompress_block(
@@ -322,10 +323,10 @@ static void astc_decompress_block(
         } else {
             // Store as 32-bit float
             float* output_f = reinterpret_cast<float*>(output);
-            output_f[i * 4 + 0] = color.lane<0>() * 255.f; // *255.f here so I don't have to modify the rest of the code...
-            output_f[i * 4 + 1] = color.lane<1>() * 255.f;
-            output_f[i * 4 + 2] = color.lane<2>() * 255.f;
-            output_f[i * 4 + 3] = color.lane<3>() * 255.f;
+            output_f[i * 4 + 0] = color.lane<0>();
+            output_f[i * 4 + 1] = color.lane<1>();
+            output_f[i * 4 + 2] = color.lane<2>();
+            output_f[i * 4 + 3] = color.lane<3>();
         }
     }
 }
@@ -1133,11 +1134,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 }
 
 void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda) {
-    if (lambda <= 0.0f) {
-        lambda = 10.0f;
-    }
-
-    // Map lambda from [10, 40] to ...
+	// Map lambda from [10, 40] to ...
     float lambda_10 = 0.25f;
     float lambda_40 = 1.5f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
@@ -1211,8 +1208,7 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         float original_mse;
         if (block_type == ASTCENC_TYPE_U8) {
             original_mse = calculate_ssd_weighted(original_decoded, temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
-        }
-        else {
+        } else {
             original_mse = calculate_mrsse_weighted((float*)original_decoded, (float*)temp_decompressed, block_width * block_height * block_depth * 4, high_pass_image);
         }
 
