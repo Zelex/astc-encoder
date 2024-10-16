@@ -1134,10 +1134,18 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 }
 
 void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda) {
-	// Map lambda from [10, 40] to ...
+    // nothing to do if lambda is 0
+    if(lambda <= 0) {
+        return;
+    }
+
+    // Map lambda from [10, 40] to ...
     float lambda_10 = 0.25f;
     float lambda_40 = 1.5f;
     lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
+    if(lambda <= 0) {
+        lambda = 0;
+    }
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
