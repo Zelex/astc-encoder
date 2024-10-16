@@ -743,7 +743,9 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
                 original_mse = ERROR_FN((float*)original_decoded, (float*)modified_decoded, block_width*block_height*block_depth*4, all_gradients);
             }
 
-            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_search(&mtf_weights, current_bits, weights_mask), mtf_search(&mtf_endpoints, current_bits, endpoints_mask), current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+            int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
+            int mtf_endpoints_pos = mtf_search(&mtf_endpoints, current_bits, endpoints_mask);
+            float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
 
             struct candidate_t {
                 int128_t bits;
@@ -756,8 +758,8 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
             int endpoints_count = 0;
 
             // Add the current block to the candidates
-            best_weights[0] = {current_bits, original_mse + lambda * calculate_bit_cost(-1, current_bits, &mtf_weights, weights_mask), -1};
-            best_endpoints[0] = {current_bits, original_mse + lambda * calculate_bit_cost(-1, current_bits, &mtf_endpoints, endpoints_mask), -1};
+            best_weights[0] = {current_bits, original_mse + lambda * calculate_bit_cost(mtf_weights_pos, current_bits, &mtf_weights, weights_mask), mtf_weights_pos};
+            best_endpoints[0] = {current_bits, original_mse + lambda * calculate_bit_cost(mtf_endpoints_pos, current_bits, &mtf_endpoints, endpoints_mask), mtf_endpoints_pos};
             weights_count = 1;
             endpoints_count = 1;
 
