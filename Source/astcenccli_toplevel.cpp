@@ -2248,7 +2248,13 @@ int astcenc_main(
 			int blocks_x = (image_uncomp_in->dim_x + config.block_x - 1) / config.block_x;
 			int blocks_y = (image_uncomp_in->dim_y + config.block_y - 1) / config.block_y;
 			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
-			optimize_for_lz(image_comp.data, image_comp.data_len, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, image_uncomp_in->data_type, cli_config.lz_optimize_rdo);
+			int data_type = 0;
+			switch (out_bitness) {
+			case 8: data_type = ASTCENC_TYPE_U8; break;
+			case 16: data_type = ASTCENC_TYPE_F16; break;
+			default: data_type = ASTCENC_TYPE_F32; break;
+			}
+			optimize_for_lz(image_comp.data, image_comp.data_len, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, cli_config.lz_optimize_rdo);
 		}
 	}
 

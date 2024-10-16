@@ -309,10 +309,10 @@ static void astc_decompress_block(
         } else {
             // Store as 32-bit float
             float* output_f = reinterpret_cast<float*>(output);
-            output_f[i * 4 + 0] = color.lane<0>();
-            output_f[i * 4 + 1] = color.lane<1>();
-            output_f[i * 4 + 2] = color.lane<2>();
-            output_f[i * 4 + 3] = color.lane<3>();
+            output_f[i * 4 + 0] = color.lane<0>() * 255.f; // *255.f here so I don't have to modify the rest of the code...
+            output_f[i * 4 + 1] = color.lane<1>() * 255.f;
+            output_f[i * 4 + 2] = color.lane<2>() * 255.f;
+            output_f[i * 4 + 3] = color.lane<3>() * 255.f;
         }
     }
 }
@@ -331,7 +331,7 @@ void process_and_recalculate_astc_block(
     symbolic_compressed_block scb;
     physical_to_symbolic(bsd, block_ptr, scb);
 
-    if (scb.block_type == SYM_BTYPE_CONST_U16) {
+    if (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16) {
         return;
     }
 
@@ -965,18 +965,18 @@ static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int bloc
     free(weight_bits);
 }
 
-void reconstruct_image(uint8_t* all_original_decoded, int width, int height, int depth, int block_width, int block_height, int block_depth, int block_type, uint8_t* output_image) {
+template<typename T>
+void reconstruct_image(T* all_original_decoded, int width, int height, int depth, int block_width, int block_height, int block_depth, T* output_image) {
     int blocks_x = (width + block_width - 1) / block_width;
     int blocks_y = (height + block_height - 1) / block_height;
     int blocks_z = (depth + block_depth - 1) / block_depth;
     int channels = 4;
-    int pixel_size = (block_type == ASTCENC_TYPE_U8) ? 1 : 4;
 
     for (int z = 0; z < blocks_z; z++) {
         for (int y = 0; y < blocks_y; y++) {
             for (int x = 0; x < blocks_x; x++) {
                 int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
-                uint8_t* block_data = all_original_decoded + block_index * block_width * block_height * block_depth * channels * pixel_size;
+                T* block_data = all_original_decoded + block_index * block_width * block_height * block_depth * channels;
 
                 for (int bz = 0; bz < block_depth; bz++) {
                     for (int by = 0; by < block_height; by++) {
@@ -986,10 +986,10 @@ void reconstruct_image(uint8_t* all_original_decoded, int width, int height, int
                             int image_z = z * block_depth + bz;
 
                             if (image_x < width && image_y < height && image_z < depth) {
-                                int image_index = (image_z * height * width + image_y * width + image_x) * channels * pixel_size;
-                                int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * channels * pixel_size;
+                                int image_index = (image_z * height * width + image_y * width + image_x) * channels;
+                                int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * channels;
 
-                                for (int c = 0; c < channels * pixel_size; c++) {
+                                for (int c = 0; c < channels; c++) {
                                     output_image[image_index + c] = block_data[block_pixel_index + c];
                                 }
                             }
@@ -1083,10 +1083,11 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
     free(temp2);
 }
 
-void high_pass_filter_squared_blurred(const uint8_t* input, float* output, int width, int height, int depth, int channels, float sigma_highpass, float sigma_blur) {
+template<typename T>
+void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, int channels, float sigma_highpass, float sigma_blur) {
     size_t pixel_count = width * height * depth;
     size_t image_size = pixel_count * channels;
-    uint8_t* blurred = (uint8_t*)malloc(image_size);
+    T* blurred = (T*)malloc(image_size * sizeof(T));
     float* squared_diff = (float*)malloc(pixel_count * sizeof(float));
     
     // Apply initial Gaussian blur for high-pass filter
@@ -1154,15 +1155,23 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
     int depth = blocks_z * block_depth;
 
     // Allocate memory for the reconstructed image
-    size_t image_size = width * height * depth * 4;
+    size_t image_size = width * height * depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
     uint8_t* reconstructed_image = (uint8_t*)malloc(image_size);
     float* high_pass_image = (float*)malloc(width * height * depth * sizeof(float)); // Single channel
 
-    // Reconstruct the image from all_original_decoded
-    reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, block_type, reconstructed_image);
+    if(block_type == ASTCENC_TYPE_U8) {
+        // Reconstruct the image from all_original_decoded
+        reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
-    // Apply high-pass filter with squared differences and additional blur
-    high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
+        // Apply high-pass filter with squared differences and additional blur
+        high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
+    } else {
+        // Reconstruct the image from all_original_decoded
+        reconstruct_image((float*)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float*)reconstructed_image);
+
+        // Apply high-pass filter with squared differences and additional blur
+        high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
+    }
 
     dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image);
     dual_mtf_pass(data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image);
