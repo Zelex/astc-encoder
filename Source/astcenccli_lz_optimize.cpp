@@ -124,6 +124,7 @@
 //#define MAX_MTF_SIZE (1024+256+64+16+1)
 #define CACHE_SIZE (4096)  // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (5)
+#define MAX_THREADS (8)
 
 typedef struct {
     int h[256];
@@ -675,9 +676,8 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 static void dual_mtf_pass(uint8_t* data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients) {
     const int block_size = 16;
     size_t num_blocks = data_len / block_size;
-    const int max_threads = 8;  // Maximum number of threads
-    const int blocks_per_thread = (int)((num_blocks + max_threads - 1) / max_threads);
-    const int num_threads = min(max_threads, (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread));
+    const int blocks_per_thread = (int)((num_blocks + MAX_THREADS - 1) / MAX_THREADS);
+    const int num_threads = min(MAX_THREADS, (int)((num_blocks + blocks_per_thread - 1) / blocks_per_thread));
 
     std::vector<std::thread> threads;
 
