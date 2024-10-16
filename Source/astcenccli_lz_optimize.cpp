@@ -280,8 +280,8 @@ static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int
         float A = (float)img1[i];
         float B = (float)img2[i];
         float diff = A - B;
-        sum += (diff * diff) / (A*A + B*B) * weights[i>>2] * channel_weights[i&3];
-        //sum += diff * diff * weights[i>>2] * channel_weights[i&3];
+        //sum += (diff * diff) / (A*A + B*B) * weights[i>>2] * channel_weights[i&3];
+        sum += diff * diff * weights[i>>2] * channel_weights[i&3]; // matches otex
     }
     return sum * 256.f;
 }
