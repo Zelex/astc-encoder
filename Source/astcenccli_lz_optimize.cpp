@@ -1195,8 +1195,8 @@ void optimize_for_lz(uint8_t* data, size_t data_len, int blocks_x, int blocks_y,
         lambda = 0;
     }
 
-    float lambda_scale = (block_width*block_height*block_depth) / 16.f;
-    lambda *= lambda_scale;
+    //float lambda_scale = (block_width*block_height*block_depth) / 16.f;
+    //lambda *= lambda_scale;
 
     // Initialize block_size_descriptor once
     block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
