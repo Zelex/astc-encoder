@@ -92,7 +92,7 @@ static const std::array<astcenc_preset_config, 7> preset_configs_high {{
 static const std::array<astcenc_preset_config, 7> preset_configs_mid {{
 	{
 		ASTCENC_PRE_RDO,
-		4, 256, 256, 256, 100, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 0.0f
+		4, 256, 256, 256, 1, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 0.0f
 	}, {
 		ASTCENC_PRE_FASTEST,
 		2, 10, 6, 4, 43, 2, 2, 2, 2, 2, 85.2f, 63.2f, 3.5f, 1.0f, 1.0f, 0.80f, 1.0f
@@ -120,7 +120,7 @@ static const std::array<astcenc_preset_config, 7> preset_configs_mid {{
 static const std::array<astcenc_preset_config, 7> preset_configs_low {{
 	{
 		ASTCENC_PRE_RDO,
-		4, 256, 256, 256, 100, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 1.0f
+		4, 256, 256, 256, 1, 4, 8, 8, 8, 8, 200.0f, 200.0f, 10.0f, 2.0f, 2.0f, 0.99f, 1.0f
 	}, {
 		ASTCENC_PRE_FASTEST,
 		2, 10, 6, 4, 40, 2, 2, 2, 2, 2, 85.0f, 63.0f, 3.5f, 1.0f, 1.0f, 0.80f, 1.0f
