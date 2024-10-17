@@ -2179,6 +2179,7 @@ int astcenc_main(
 		unsigned int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 		size_t buffer_size = blocks_x * blocks_y * blocks_z * 16;
 		uint8_t* buffer = new uint8_t[buffer_size];
+		uint8_t* buffer_exhaustive = nullptr;
 
 		compression_workload work;
 		work.context = codec_context;
@@ -2230,6 +2231,56 @@ int astcenc_main(
 			return 1;
 		}
 
+		// If lz_optimize is set, use exhaustive configuration for a second compression
+		if (cli_config.lz_optimize)
+		{
+			// Prepare compression settings
+			astcenc_config exhaustive_config;
+			astcenc_context* exhaustive_context;
+			astcenc_config_init(ASTCENC_PRF_LDR, config.block_x, config.block_y, config.block_z, ASTCENC_PRE_EXHAUSTIVE, 0, &exhaustive_config);
+			astcenc_context_alloc(&exhaustive_config, cli_config.thread_count, &exhaustive_context);
+
+			buffer_exhaustive = new uint8_t[buffer_size];
+			work.context = exhaustive_context;
+			work.data_out = buffer_exhaustive;
+
+			if (!cli_config.silentmode)
+			{
+				printf("Compressing with exhaustive configuration\n");
+			}
+
+			double start_exhaustive_time = get_time();
+			for (unsigned int i = 0; i < cli_config.repeat_count; i++)
+			{
+				if (cli_config.thread_count > 1)
+				{
+					launch_threads("Exhaustive Compression", cli_config.thread_count, compression_workload_runner, &work);
+				}
+				else
+				{
+					work.error = astcenc_compress_image(
+						work.context, work.image, &work.swizzle,
+						work.data_out, work.data_len, 0);
+				}
+
+				astcenc_compress_reset(exhaustive_context);
+			}
+			double total_exhaustive_time = get_time() - start_exhaustive_time;
+
+			if (work.error != ASTCENC_SUCCESS)
+			{
+				print_error("ERROR: Codec compress failed for exhaustive config: %s\n", astcenc_get_error_string(work.error));
+				return 1;
+			}
+
+			astcenc_context_free(exhaustive_context);
+
+			if (!cli_config.silentmode)
+			{
+				printf("Exhaustive compression time: %8.4f s\n", total_exhaustive_time);
+			}
+		}
+
 		image_comp.block_x = config.block_x;
 		image_comp.block_y = config.block_y;
 		image_comp.block_z = config.block_z;
@@ -2249,7 +2300,13 @@ int astcenc_main(
 			int blocks_y = (image_uncomp_in->dim_y + config.block_y - 1) / config.block_y;
 			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
-			optimize_for_lz(image_comp.data, image_comp.data_len, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, cli_config.lz_optimize_rdo);
+			optimize_for_lz(buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, cli_config.lz_optimize_rdo);
+		}
+
+		// Clean up
+		if (buffer_exhaustive)
+		{
+			delete[] buffer_exhaustive;
 		}
 	}
 

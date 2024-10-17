@@ -429,6 +429,7 @@ int astcenc_main(
  * @brief Optimize compressed data for better LZ compression.
  *
  * @param data          The compressed image data.
+ * @param exhaustive_data The exhaustive compressed image data.
  * @param data_len      The length of the compressed data.
  * @param blocks_x      The number of blocks in the x dimension.
  * @param blocks_y      The number of blocks in the y dimension.
@@ -440,6 +441,7 @@ int astcenc_main(
  */
 void optimize_for_lz(
     uint8_t* data,
+    uint8_t* exhaustive_data,
     size_t data_len,
     int blocks_x,
     int blocks_y,
