@@ -15,6 +15,7 @@
 #include "astcenc.h"
 #include "astcenc_internal.h"
 #include "astcenc_internal_entry.h"
+#include "astcenc_mathlib.h"
 #include "astcenc_vecmathlib.h"
 #include "astcenccli_internal.h"
 
@@ -176,17 +177,6 @@ struct CachedBlock
 	uint8_t decoded[6 * 6 * 6 * 4 * 4]; // Max size for both U8 and float types
 	bool valid;
 };
-
-template <typename T>
-static inline T max(T a, T b)
-{
-	return a > b ? a : b;
-}
-template <typename T>
-static inline T min(T a, T b)
-{
-	return a < b ? a : b;
-}
 
 static inline float log2_fast(float val)
 {
@@ -796,7 +786,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
 	const int max_blocks_per_item = 8192;
-	const int num_threads = std::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
+	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
 
 	// Initialize weight bits table
 	uint8_t* weight_bits = (uint8_t*)malloc(2048);
@@ -1227,7 +1217,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		// Fill the work queue
 		for (size_t start_block = 0; start_block < num_blocks; start_block += max_blocks_per_item)
 		{
-			size_t end_block = std::min(start_block + max_blocks_per_item, num_blocks);
+			size_t end_block = astc::min(start_block + max_blocks_per_item, num_blocks);
 			work_queue.push({start_block, end_block, is_forward});
 		}
 
@@ -1455,8 +1445,8 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	float activity_scalar = 4.f;
 	for (size_t i = 0; i < pixel_count; i++)
 	{
-		output[i] = C1 / (C2 + activity_scalar * sqrtf(output[i]));
-		output[i] = max(output[i], 1.0f);
+		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
+		output[i] = astc::max(output[i], 1.0f);
 	}
 
 	free(blurred);
