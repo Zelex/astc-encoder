@@ -772,6 +772,20 @@ static void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpo
 	endpoints_mask = weights_mask.bitwise_not();
 }
 
+struct BitsAndWeightBits
+{
+	Int128 bits;
+	int weight_bits;
+};
+
+static BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, const uint8_t* weight_bits)
+{
+	BitsAndWeightBits result;
+	result.bits = Int128(block);
+	result.weight_bits = weight_bits[((uint16_t*)&result.bits)[0] & 0x7ff];
+	return result;
+}
+
 static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients)
 {
 	const int block_size = 16;
@@ -808,10 +822,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		auto process_block = [&](size_t block_index, bool is_forward)
 		{
 			uint8_t* current_block = data + block_index * block_size;
-			Int128 current_bits(current_block);
+			BitsAndWeightBits current = get_bits_and_weight_bits(current_block, weight_bits);
+			Int128 current_bits = current.bits;
+			int current_weight_bits = current.weight_bits;
 			Int128 best_match = current_bits;
 
-			int current_weight_bits = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
 			Int128 weights_mask, endpoints_mask;
 			calculate_masks(current_weight_bits, weights_mask, endpoints_mask);
 
@@ -906,9 +921,10 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_weights_pos, current_bits, &mtf_weights, weights_mask), mtf_weights_pos);
 			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_endpoints_pos, current_bits, &mtf_endpoints, endpoints_mask), mtf_endpoints_pos);
 
-			// Add ref1
-			Int128 ref1_bits(ref1 + block_index * block_size);
-			int ref1_weight_bits = weight_bits[((uint16_t*)&ref1_bits)[0] & 0x7ff];
+			// Replace the ref1 and ref2 bit extraction with the helper function
+			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits);
+			Int128 ref1_bits = ref1_wb.bits;
+			int ref1_weight_bits = ref1_wb.weight_bits;
 			Int128 ref1_weight_mask, ref1_endpoint_mask;
 			calculate_masks(ref1_weight_bits, ref1_weight_mask, ref1_endpoint_mask);
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
@@ -918,8 +934,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref1, ref1_bits, &mtf_endpoints, ref1_endpoint_mask), mtf_endpoints_pos_ref1);
 
 			// Add ref2
-			Int128 ref2_bits(ref2 + block_index * block_size);
-			int ref2_weight_bits = weight_bits[((uint16_t*)&ref2_bits)[0] & 0x7ff];
+			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits);
+			Int128 ref2_bits = ref2_wb.bits;
+			int ref2_weight_bits = ref2_wb.weight_bits;
 			Int128 ref2_weight_mask, ref2_endpoint_mask;
 			calculate_masks(ref2_weight_bits, ref2_weight_mask, ref2_endpoint_mask);
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
@@ -932,8 +949,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			for (int k = 0; k < mtf_endpoints.size; k++)
 			{
 				Int128 candidate_endpoints = mtf_endpoints.list[k];
-				int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-				int endpoints_weight_bits = weight_bits[endpoints_mode];
+				int endpoints_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_endpoints, weight_bits).weight_bits;
 				// Not worth a kraken match
 				if (endpoints_weight_bits < 24 && endpoints_weight_bits > 0)
 					continue;
@@ -951,8 +967,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			// Best of best endpoint candidate
 			Int128 best_endpoints_bits = best_endpoints[0].bits;
-			int best_endpoints_mode = ((uint16_t*)&best_endpoints_bits)[0] & 0x7ff;
-			int best_endpoints_weight_bits = weight_bits[best_endpoints_mode];
+			int best_endpoints_weight_bits = get_bits_and_weight_bits((uint8_t*)&best_endpoints_bits, weight_bits).weight_bits;
 			Int128 best_endpoints_weight_mask, best_endpoints_endpoint_mask;
 			calculate_masks(best_endpoints_weight_bits, best_endpoints_weight_mask, best_endpoints_endpoint_mask);
 
@@ -960,8 +975,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			for (int k = 0; k < mtf_weights.size; k++)
 			{
 				Int128 candidate_weights = mtf_weights.list[k];
-				int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
-				int weights_weight_bits = weight_bits[weights_mode];
+				int weights_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits).weight_bits;
 				if (weights_weight_bits < best_endpoints_weight_bits)
 					continue;
 
