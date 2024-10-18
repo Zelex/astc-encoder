@@ -320,21 +320,22 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 {
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
-		return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		return 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
 	}
 	else if (mtf_value_1 == -1)
 	{
-		return 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+		return 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
 	}
 	else if (mtf_value_2 == -1)
 	{
-		return 8.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		return 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
 	}
 	else
 	{
-		float cost_1 = 8.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
-		float cost_2 = 8.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
-		return cost_1 < cost_2 ? cost_1 : cost_2;
+		//float cost_1 = 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+		//float cost_2 = 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		//return cost_1 < cost_2 ? cost_1 : cost_2;
+		return log2_fast((float)(mtf_value_1 + 1)) + log2_fast((float)(mtf_value_2 + 1));
 	}
 }
 
@@ -1343,8 +1344,8 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	channel_weights = channel_weights * 0.25f;
 
 	// Map lambda from [10, 40] to ...
-	float lambda_10 = 0.4f;
-	float lambda_40 = 1.35f;
+	float lambda_10 = 0.275f;
+	float lambda_40 = 0.8f;
 	lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
 	if (lambda <= 0)
 		lambda = 0;
