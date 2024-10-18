@@ -782,7 +782,7 @@ static BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, const ui
 {
 	BitsAndWeightBits result;
 	result.bits = Int128(block);
-	result.weight_bits = weight_bits[((uint16_t*)&result.bits)[0] & 0x7ff];
+	result.weight_bits = weight_bits[(block[0] | (block[1] << 8)) & 0x7ff];
 	return result;
 }
 
@@ -1009,13 +1009,13 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				for (int j = 0; j < endpoints_count; j++)
 				{
 					Int128 candidate_endpoints = best_endpoints[j].bits;
-					int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
-					int endpoints_weight_bits = weight_bits[endpoints_mode];
+					BitsAndWeightBits endpoints_wb = get_bits_and_weight_bits((uint8_t*)&candidate_endpoints, weight_bits);
+					int endpoints_weight_bits = endpoints_wb.weight_bits;
 					Int128 weights_mask, endpoints_mask;
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
-					uint8_t temp_block[16];
 					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
+					uint8_t temp_block[16];
 					temp_bits.to_bytes(temp_block);
 
 					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
@@ -1040,8 +1040,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					// now do the same thing for weights
 					Int128 candidate_weights = best_weights[i].bits;
-					int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
-					int weights_weight_bits = weight_bits[weights_mode];
+					BitsAndWeightBits weights_wb = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits);
+					int weights_weight_bits = weights_wb.weight_bits;
 					calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
 					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
@@ -1072,8 +1072,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				best_match.to_bytes(current_block);
 
 			// Recalculate masks for the best match
-			int best_mode = ((uint16_t*)&best_match)[0] & 0x7ff;
-			int best_weight_bits = weight_bits[best_mode];
+			BitsAndWeightBits best_match_wb = get_bits_and_weight_bits(current_block, weight_bits);
+			int best_weight_bits = best_match_wb.weight_bits;
 			Int128 best_weights_mask, best_endpoints_mask;
 			calculate_masks(best_weight_bits, best_weights_mask, best_endpoints_mask);
 
