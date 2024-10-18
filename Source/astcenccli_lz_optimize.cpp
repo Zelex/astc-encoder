@@ -20,143 +20,166 @@
 #include "astcenc_vecmathlib.h"
 #include "astcenccli_internal.h"
 
-class Int128 {
+class Int128
+{
 private:
-    #if defined(_MSC_VER) && defined(_M_X64)
-    __m128i value;
-    #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-    __int128 value;
-    #else
-    #error "No 128-bit integer type available for this platform"
-    #endif
+#if defined(_MSC_VER) && defined(_M_X64)
+	__m128i value;
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+	__int128 value;
+#else
+#error "No 128-bit integer type available for this platform"
+#endif
 
 public:
-    Int128() : value{} {}
+	Int128() : value{}
+	{
+	}
 
-    explicit Int128(const uint8_t* bytes) {
-        #if defined(_MSC_VER) && defined(_M_X64)
-        value = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        memcpy(&value, bytes, 16);
-        #endif
-    }
+	explicit Int128(const uint8_t* bytes)
+	{
+#if defined(_MSC_VER) && defined(_M_X64)
+		value = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		memcpy(&value, bytes, 16);
+#endif
+	}
 
-    void to_bytes(uint8_t* bytes) const {
-        #if defined(_MSC_VER) && defined(_M_X64)
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes), value);
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        memcpy(bytes, &value, 16);
-        #endif
-    }
+	void to_bytes(uint8_t* bytes) const
+	{
+#if defined(_MSC_VER) && defined(_M_X64)
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(bytes), value);
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		memcpy(bytes, &value, 16);
+#endif
+	}
 
-    uint8_t get_byte(int index) const {
-        #if defined(_MSC_VER) && defined(_M_X64)
-        return reinterpret_cast<const uint8_t*>(&value)[index];
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        return (value >> (index * 8)) & 0xFF;
-        #endif
-    }
+	uint8_t get_byte(int index) const
+	{
+#if defined(_MSC_VER) && defined(_M_X64)
+		return reinterpret_cast<const uint8_t*>(&value)[index];
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		return (value >> (index * 8)) & 0xFF;
+#endif
+	}
 
-    Int128 shift_left(int shift) const {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        if (shift >= 128) {
-            result.value = _mm_setzero_si128();
-        } else if (shift == 0) {
-            result.value = value;
-        } else if (shift < 64) {
-            __m128i lo = _mm_slli_epi64(value, shift);
-            __m128i hi = _mm_slli_epi64(_mm_srli_si128(value, 8), shift);
-            __m128i v_cross = _mm_srli_epi64(value, 64 - shift);
-            v_cross = _mm_and_si128(v_cross, _mm_set_epi64x(0, -1));
-            hi = _mm_or_si128(hi, v_cross);
-            result.value = _mm_or_si128(_mm_slli_si128(hi, 8), lo);
-        } else {
-            __m128i hi = _mm_slli_epi64(value, shift - 64 + 1);
-            result.value = _mm_slli_si128(hi, 8);
-        }
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = value << shift;
-        #endif
-        return result;
-    }
+	Int128 shift_left(int shift) const
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		if (shift >= 128)
+		{
+			result.value = _mm_setzero_si128();
+		}
+		else if (shift == 0)
+		{
+			result.value = value;
+		}
+		else if (shift < 64)
+		{
+			__m128i lo = _mm_slli_epi64(value, shift);
+			__m128i hi = _mm_slli_epi64(_mm_srli_si128(value, 8), shift);
+			__m128i v_cross = _mm_srli_epi64(value, 64 - shift);
+			v_cross = _mm_and_si128(v_cross, _mm_set_epi64x(0, -1));
+			hi = _mm_or_si128(hi, v_cross);
+			result.value = _mm_or_si128(_mm_slli_si128(hi, 8), lo);
+		}
+		else
+		{
+			__m128i hi = _mm_slli_epi64(value, shift - 64 + 1);
+			result.value = _mm_slli_si128(hi, 8);
+		}
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = value << shift;
+#endif
+		return result;
+	}
 
-    Int128 bitwise_and(const Int128& other) const {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        result.value = _mm_and_si128(value, other.value);
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = value & other.value;
-        #endif
-        return result;
-    }
+	Int128 bitwise_and(const Int128& other) const
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		result.value = _mm_and_si128(value, other.value);
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = value & other.value;
+#endif
+		return result;
+	}
 
-    Int128 bitwise_or(const Int128& other) const {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        result.value = _mm_or_si128(value, other.value);
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = value | other.value;
-        #endif
-        return result;
-    }
+	Int128 bitwise_or(const Int128& other) const
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		result.value = _mm_or_si128(value, other.value);
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = value | other.value;
+#endif
+		return result;
+	}
 
-    bool is_equal(const Int128& other) const {
-        #if defined(_MSC_VER) && defined(_M_X64)
-        return _mm_movemask_epi8(_mm_cmpeq_epi8(value, other.value)) == 0xFFFF;
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        return value == other.value;
-        #endif
-    }
+	bool is_equal(const Int128& other) const
+	{
+#if defined(_MSC_VER) && defined(_M_X64)
+		return _mm_movemask_epi8(_mm_cmpeq_epi8(value, other.value)) == 0xFFFF;
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		return value == other.value;
+#endif
+	}
 
-    static Int128 from_int(long long val) {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        result.value = _mm_set_epi64x(0, val);
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = static_cast<__int128>(val);
-        #endif
-        return result;
-    }
+	static Int128 from_int(long long val)
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		result.value = _mm_set_epi64x(0, val);
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = static_cast<__int128>(val);
+#endif
+		return result;
+	}
 
-    Int128 subtract(const Int128& other) const {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        __m128i borrow = _mm_setzero_si128();
-        result.value = _mm_sub_epi64(value, other.value);
-        borrow = _mm_srli_epi64(_mm_cmpgt_epi64(other.value, value), 63);
-        __m128i high_result = _mm_sub_epi64(_mm_srli_si128(value, 8), _mm_srli_si128(other.value, 8));
-        high_result = _mm_sub_epi64(high_result, borrow);
-        result.value = _mm_or_si128(result.value, _mm_slli_si128(high_result, 8));
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = value - other.value;
-        #endif
-        return result;
-    }
+	Int128 subtract(const Int128& other) const
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		__m128i borrow = _mm_setzero_si128();
+		result.value = _mm_sub_epi64(value, other.value);
+		borrow = _mm_srli_epi64(_mm_cmpgt_epi64(other.value, value), 63);
+		__m128i high_result =
+		    _mm_sub_epi64(_mm_srli_si128(value, 8), _mm_srli_si128(other.value, 8));
+		high_result = _mm_sub_epi64(high_result, borrow);
+		result.value = _mm_or_si128(result.value, _mm_slli_si128(high_result, 8));
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = value - other.value;
+#endif
+		return result;
+	}
 
-    Int128 bitwise_not() const {
-        Int128 result;
-        #if defined(_MSC_VER) && defined(_M_X64)
-        result.value = _mm_xor_si128(value, _mm_set1_epi32(-1));
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        result.value = ~value;
-        #endif
-        return result;
-    }
+	Int128 bitwise_not() const
+	{
+		Int128 result;
+#if defined(_MSC_VER) && defined(_M_X64)
+		result.value = _mm_xor_si128(value, _mm_set1_epi32(-1));
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		result.value = ~value;
+#endif
+		return result;
+	}
 
-    uint64_t get_uint64(int index) const {
-        #if defined(_MSC_VER) && defined(_M_X64)
-        return reinterpret_cast<const uint64_t*>(&value)[index];
-        #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-        return (index == 0) ? (uint64_t)value : (uint64_t)(value >> 64);
-        #endif
-    }
+	uint64_t get_uint64(int index) const
+	{
+#if defined(_MSC_VER) && defined(_M_X64)
+		return reinterpret_cast<const uint64_t*>(&value)[index];
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+		return (index == 0) ? (uint64_t)value : (uint64_t)(value >> 64);
+#endif
+	}
 
-    std::string to_string() const {
-        char buffer[33];
-        snprintf(buffer, sizeof(buffer), "%016llx%016llx", get_uint64(1), get_uint64(0));
-        return std::string(buffer);
-    }
+	std::string to_string() const
+	{
+		char buffer[33];
+		snprintf(buffer, sizeof(buffer), "%016llx%016llx", get_uint64(1), get_uint64(0));
+		return std::string(buffer);
+	}
 };
 
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
@@ -205,10 +228,8 @@ static uint32_t hash_128(const Int128& value)
 	uint32_t hash = 0;
 	for (int i = 0; i < 4; i++)
 	{
-		hash ^= value.get_byte(i * 4) | 
-		        (value.get_byte(i * 4 + 1) << 8) | 
-		        (value.get_byte(i * 4 + 2) << 16) | 
-		        (value.get_byte(i * 4 + 3) << 24);
+		hash ^= value.get_byte(i * 4) | (value.get_byte(i * 4 + 1) << 8) |
+		        (value.get_byte(i * 4 + 2) << 16) | (value.get_byte(i * 4 + 3) << 24);
 	}
 	return hash;
 }
@@ -298,7 +319,8 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 	return pos;
 }
 
-static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf* mtf, const Int128& mask)
+static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf* mtf,
+                                const Int128& mask)
 {
 	Int128 masked_literal = literal_value.bitwise_and(mask);
 	if (mtf_value == -1)
@@ -312,7 +334,8 @@ static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf*
 }
 
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value,
-                                  Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2)
+                                  Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1,
+                                  const Int128& mask_2)
 {
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
@@ -783,9 +806,10 @@ struct WorkItem
 	bool is_forward;
 };
 
-static void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpoints_mask) {
+static void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpoints_mask)
+{
 	Int128 one = Int128::from_int(1);
-    weights_mask = one.shift_left(weight_bits).subtract(one).shift_left(128 - weight_bits);
+	weights_mask = one.shift_left(weight_bits).subtract(one).shift_left(128 - weight_bits);
 	endpoints_mask = weights_mask.bitwise_not();
 }
 
@@ -843,8 +867,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				uint32_t hash = hash_128(candidate_bits) & (CACHE_SIZE - 1); // Modulo CACHE_SIZE
 
 				// Check if the candidate is in the cache
-				if (block_cache[hash].valid &&
-				    block_cache[hash].encoded.is_equal(candidate_bits))
+				if (block_cache[hash].valid && block_cache[hash].encoded.is_equal(candidate_bits))
 				{
 					// Compute MSE using cached decoded data
 					if (block_type == ASTCENC_TYPE_U8)
@@ -921,8 +944,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int weights_count = 0;
 			int endpoints_count = 0;
 
-			auto add_candidate = [](Candidate* candidates, int& count, const Int128& bits, float rd_cost,
-			                        int mtf_position) {
+			auto add_candidate = [](Candidate* candidates, int& count, const Int128& bits,
+			                        float rd_cost, int mtf_position) {
 				if (count < BEST_CANDIDATES_COUNT ||
 				    rd_cost < candidates[BEST_CANDIDATES_COUNT - 1].rd_cost)
 				{
@@ -1022,8 +1045,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			Int128 best_endpoints_bits = best_endpoints[0].bits;
 			int best_endpoints_mode = ((uint16_t*)&best_endpoints_bits)[0] & 0x7ff;
 			int best_endpoints_weight_bits = weight_bits[best_endpoints_mode];
-            Int128 best_endpoints_weight_mask, best_endpoints_endpoint_mask;
-            calculate_masks(best_endpoints_weight_bits, best_endpoints_weight_mask, best_endpoints_endpoint_mask);
+			Int128 best_endpoints_weight_mask, best_endpoints_endpoint_mask;
+			calculate_masks(best_endpoints_weight_bits, best_endpoints_weight_mask,
+			                best_endpoints_endpoint_mask);
 
 			// Find best weight candidates
 			for (int k = 0; k < mtf_weights.size; k++)
@@ -1039,8 +1063,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				uint8_t temp_block[16];
 				memcpy(temp_block, current_block, 16);
 				Int128* temp_bits = (Int128*)temp_block;
-                *temp_bits = candidate_weights.bitwise_and(best_endpoints_weight_mask).bitwise_or(
-                    best_endpoints_bits.bitwise_and(best_endpoints_endpoint_mask));
+				*temp_bits =
+				    candidate_weights.bitwise_and(best_endpoints_weight_mask)
+				        .bitwise_or(best_endpoints_bits.bitwise_and(best_endpoints_endpoint_mask));
 
 				astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height,
 				                      block_depth, block_type);
@@ -1075,12 +1100,14 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					Int128 candidate_endpoints = best_endpoints[j].bits;
 					int endpoints_mode = ((uint16_t*)&candidate_endpoints)[0] & 0x7ff;
 					int endpoints_weight_bits = weight_bits[endpoints_mode];
-                    Int128 weights_mask, endpoints_mask;
-                    calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
+					Int128 weights_mask, endpoints_mask;
+					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
 					uint8_t temp_block[16];
-					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(
-					    best_endpoints[j].bits.bitwise_and(endpoints_mask));
+					Int128 temp_bits =
+					    best_weights[i]
+					        .bits.bitwise_and(weights_mask)
+					        .bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					temp_bits.to_bytes(temp_block);
 
 					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width,
@@ -1101,10 +1128,10 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					}
 
 					float rd_cost =
-					    mse + lambda * calculate_bit_cost_2(
-					                       best_weights[i].mtf_position,
-					                       best_endpoints[j].mtf_position, temp_bits, &mtf_weights,
-					                       &mtf_endpoints, weights_mask, endpoints_mask);
+					    mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position,
+					                                        best_endpoints[j].mtf_position,
+					                                        temp_bits, &mtf_weights, &mtf_endpoints,
+					                                        weights_mask, endpoints_mask);
 
 					if (rd_cost < best_rd_cost)
 					{
@@ -1116,10 +1143,10 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					Int128 candidate_weights = best_weights[i].bits;
 					int weights_mode = ((uint16_t*)&candidate_weights)[0] & 0x7ff;
 					int weights_weight_bits = weight_bits[weights_mode];
-                    calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
+					calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
-					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(
-					    best_endpoints[j].bits.bitwise_and(endpoints_mask));
+					temp_bits = candidate_weights.bitwise_and(weights_mask)
+					                .bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					temp_bits.to_bytes(temp_block);
 
 					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width,
@@ -1138,11 +1165,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						    block_width * block_height * block_depth * 4, all_gradients);
 					}
 
-					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position,
-					                                              best_endpoints[j].mtf_position,
-					                                              temp_bits, &mtf_weights,
-					                                              &mtf_endpoints, weights_mask,
-					                                              endpoints_mask);
+					rd_cost =
+					    mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position,
+					                                        best_endpoints[j].mtf_position,
+					                                        temp_bits, &mtf_weights, &mtf_endpoints,
+					                                        weights_mask, endpoints_mask);
 
 					if (rd_cost < best_rd_cost)
 					{
@@ -1333,8 +1360,8 @@ static void generate_gaussian_kernel(float sigma, float* kernel, int* kernel_rad
 // Apply 1D convolution for 3D images
 template <typename T>
 static void apply_1d_convolution_3d(const T* input, T* output, int width, int height, int depth,
-                                   int channels, const float* kernel, int kernel_radius,
-                                   int direction)
+                                    int channels, const float* kernel, int kernel_radius,
+                                    int direction)
 {
 	for (int z = 0; z < depth; z++)
 	{
@@ -1378,7 +1405,7 @@ static void apply_1d_convolution_3d(const T* input, T* output, int width, int he
 // Separable Gaussian blur for 3D images
 template <typename T>
 void gaussian_blur_3d(const T* input, T* output, int width, int height, int depth, int channels,
-                       float sigma)
+                      float sigma)
 {
 	float kernel[MAX_KERNEL_SIZE];
 	int kernel_radius;
