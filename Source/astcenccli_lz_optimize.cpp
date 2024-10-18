@@ -777,6 +777,13 @@ struct WorkItem
 	bool is_forward;
 };
 
+// Add this helper function
+static void calculate_masks(int weight_bits, int128_t& weights_mask, int128_t& endpoints_mask) {
+	int128_t one = create_from_int(1);
+	weights_mask = shift_left(subtract(shift_left(one, weight_bits), one), 128 - weight_bits);
+	endpoints_mask = bitwise_not(weights_mask);
+}
+
 static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len,
                           int blocks_x, int blocks_y, int blocks_z, int block_width,
                           int block_height, int block_depth, int block_type, float lambda,
@@ -820,9 +827,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			int current_weight_bits = weight_bits[((uint16_t*)current_block)[0] & 0x7ff];
 			int128_t one = create_from_int(1);
-			int128_t weights_mask = shift_left(subtract(shift_left(one, current_weight_bits), one),
-			                                   128 - current_weight_bits);
-			int128_t endpoints_mask = bitwise_not(weights_mask);
+			int128_t weights_mask, endpoints_mask;
+			calculate_masks(current_weight_bits, weights_mask, endpoints_mask);
 
 			uint8_t* original_decoded =
 			    all_original_decoded + block_index * (block_width * block_height * block_depth * 4 *
@@ -949,9 +955,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			// Add ref1
 			int128_t ref1_bits = *((int128_t*)&ref1[block_index * block_size]);
 			int ref1_weight_bits = weight_bits[((uint16_t*)&ref1_bits)[0] & 0x7ff];
-			int128_t ref1_weight_mask = shift_left(subtract(shift_left(one, ref1_weight_bits), one),
-			                                       128 - ref1_weight_bits);
-			int128_t ref1_endpoint_mask = bitwise_not(ref1_weight_mask);
+			int128_t ref1_weight_mask, ref1_endpoint_mask;
+			calculate_masks(ref1_weight_bits, ref1_weight_mask, ref1_endpoint_mask);
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
@@ -968,9 +973,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			// Add ref2
 			int128_t ref2_bits = *((int128_t*)&ref2[block_index * block_size]);
 			int ref2_weight_bits = weight_bits[((uint16_t*)&ref2_bits)[0] & 0x7ff];
-			int128_t ref2_weight_mask = shift_left(subtract(shift_left(one, ref2_weight_bits), one),
-			                                       128 - ref2_weight_bits);
-			int128_t ref2_endpoint_mask = bitwise_not(ref2_weight_mask);
+			int128_t ref2_weight_mask, ref2_endpoint_mask;
+			calculate_masks(ref2_weight_bits, ref2_weight_mask, ref2_endpoint_mask);
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
@@ -1162,9 +1166,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			// Recalculate masks for the best match
 			int best_mode = ((uint16_t*)&best_match)[0] & 0x7ff;
 			int best_weight_bits = weight_bits[best_mode];
-			int128_t best_weights_mask = shift_left(
-			    subtract(shift_left(one, best_weight_bits), one), 128 - best_weight_bits);
-			int128_t best_endpoints_mask = bitwise_not(best_weights_mask);
+			int128_t best_weights_mask, best_endpoints_mask;
+			calculate_masks(best_weight_bits, best_weights_mask, best_endpoints_mask);
 
 			histo_update(&mtf_weights.histogram, best_match, bitwise_not(create_from_int(0)));
 			histo_update(&mtf_endpoints.histogram, best_match, bitwise_not(create_from_int(0)));
