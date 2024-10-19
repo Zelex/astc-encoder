@@ -320,59 +320,50 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 {
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
-		return 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		return histo_cost(&mtf_1->histogram, literal_value, mask_1.bitwise_or(mask_2));
 	}
 	else if (mtf_value_1 == -1)
 	{
-		return 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+		return histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
 	}
 	else if (mtf_value_2 == -1)
 	{
-		return 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		return log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
 	}
 	else
 	{
-		//float cost_1 = 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
-		//float cost_2 = 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
-		//return cost_1 < cost_2 ? cost_1 : cost_2;
+		// float cost_1 = 0.f + histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
+		// float cost_2 = 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		// return cost_1 < cost_2 ? cost_1 : cost_2;
 		return log2_fast((float)(mtf_value_1 + 1)) + log2_fast((float)(mtf_value_2 + 1));
+		// return log2_fast((float)(mtf_value_1 + mtf_value_2 + 1));
 	}
 }
 
 template <typename T1, typename T2>
 static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int total, const float* weights, const vfloat4& channel_weights)
 {
-    vfloat4 sum = vfloat4::zero();
-    for (int i = 0; i < total; i += 4)
-    {
-        float weight = weights[i >> 2];
-        vfloat4 diff = vfloat4(
-            (float)img1[i] - (float)img2[i],
-            (float)img1[i+1] - (float)img2[i+1],
-            (float)img1[i+2] - (float)img2[i+2],
-            (float)img1[i+3] - (float)img2[i+3]
-        );
-        sum += diff * diff * weight;
-    }
-    return dot_s(sum, channel_weights);
+	vfloat4 sum = vfloat4::zero();
+	for (int i = 0; i < total; i += 4)
+	{
+		float weight = weights[i >> 2];
+		vfloat4 diff = vfloat4((float)img1[i] - (float)img2[i], (float)img1[i + 1] - (float)img2[i + 1], (float)img1[i + 2] - (float)img2[i + 2], (float)img1[i + 3] - (float)img2[i + 3]);
+		sum += diff * diff * weight;
+	}
+	return dot_s(sum, channel_weights);
 }
 
 template <typename T1, typename T2>
 static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int total, const float* weights, const vfloat4& channel_weights)
 {
-    vfloat4 sum = vfloat4::zero();
-    for (int i = 0; i < total; i += 4)
-    {
-        float weight = weights[i >> 2];
-        vfloat4 diff = vfloat4(
-            (float)img1[i] - (float)img2[i],
-            (float)img1[i+1] - (float)img2[i+1],
-            (float)img1[i+2] - (float)img2[i+2],
-            (float)img1[i+3] - (float)img2[i+3]
-        );
-        sum += diff * diff * weight;
-    }
-    return dot_s(sum, channel_weights) * 256.0f;
+	vfloat4 sum = vfloat4::zero();
+	for (int i = 0; i < total; i += 4)
+	{
+		float weight = weights[i >> 2];
+		vfloat4 diff = vfloat4((float)img1[i] - (float)img2[i], (float)img1[i + 1] - (float)img2[i + 1], (float)img1[i + 2] - (float)img2[i + 2], (float)img1[i + 3] - (float)img2[i + 3]);
+		sum += diff * diff * weight;
+	}
+	return dot_s(sum, channel_weights) * 256.0f;
 }
 
 static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_t* block_ptr, uint8_t* output, int block_width, int block_height, int block_depth, int block_type)
@@ -1344,9 +1335,28 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	channel_weights = channel_weights * 0.25f;
 
 	// Map lambda from [10, 40] to ...
-	float lambda_10 = 0.275f;
-	float lambda_40 = 0.8f;
-	lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
+	float lambda_0 = 0.0f;
+	float lambda_5 = 0.2f;
+	float lambda_10 = 0.325f;
+	float lambda_40 = 0.85f;
+
+	if (lambda <= 0.0f)
+	{
+		lambda = 0.0f;
+	}
+	else if (lambda <= 5.0f)
+	{
+		lambda = lambda_0 + (lambda / 5.0f) * (lambda_5 - lambda_0);
+	}
+	else if (lambda <= 10.0f)
+	{
+		lambda = lambda_5 + ((lambda - 5.0f) / 5.0f) * (lambda_10 - lambda_5);
+	}
+	else
+	{
+		lambda = lambda_10 + (lambda - 10.0f) * (lambda_40 - lambda_10) / (40.0f - 10.0f);
+	}
+
 	if (lambda <= 0)
 		lambda = 0;
 
