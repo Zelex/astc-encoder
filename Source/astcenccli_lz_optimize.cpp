@@ -310,7 +310,7 @@ static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf*
 	Int128 masked_literal = literal_value.bitwise_and(mask);
 	if (mtf_value == -1)
 		return histo_cost(histogram, masked_literal, mask);
-    return 0;
+	return 0;
 }
 
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
@@ -327,7 +327,7 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 	{
 		return histo_cost(histogram, literal_value, mask_2);
 	}
-    return 0;
+	return 0;
 }
 
 template <typename T1, typename T2>
