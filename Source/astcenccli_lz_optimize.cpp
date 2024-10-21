@@ -198,7 +198,6 @@ struct Mtf
 	Int128 list[MAX_MTF_SIZE];
 	int size;
 	int max_size;
-	Histo histogram;
 };
 
 struct CachedBlock
@@ -277,7 +276,6 @@ static void mtf_init(Mtf* mtf, int max_size)
 {
 	mtf->size = 0;
 	mtf->max_size = max_size > MAX_MTF_SIZE ? MAX_MTF_SIZE : max_size;
-	histo_reset(&mtf->histogram);
 }
 
 static int mtf_search(Mtf* mtf, const Int128& value, const Int128& mask)
@@ -307,36 +305,29 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 	return pos;
 }
 
-static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf* mtf, const Int128& mask)
+static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf* mtf, const Int128& mask, Histo* histogram)
 {
 	Int128 masked_literal = literal_value.bitwise_and(mask);
 	if (mtf_value == -1)
-		return 8.f + histo_cost(&mtf->histogram, masked_literal, mask);
-	else
-		return 10.f + log2_fast((float)(mtf_value + 32)); // Cost for an MTF value
+		return histo_cost(histogram, masked_literal, mask);
+    return 0;
 }
 
-static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2)
+static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
 {
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
-		return histo_cost(&mtf_1->histogram, literal_value, mask_1.bitwise_or(mask_2));
+		return histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
 	}
 	else if (mtf_value_1 == -1)
 	{
-		//return histo_cost(&mtf_1->histogram, literal_value, mask_1) + log2_fast((float)(mtf_value_2 + 1));
-		return histo_cost(&mtf_1->histogram, literal_value, mask_1);
+		return histo_cost(histogram, literal_value, mask_1);
 	}
 	else if (mtf_value_2 == -1)
 	{
-		//return log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
-		return histo_cost(&mtf_2->histogram, literal_value, mask_2);
+		return histo_cost(histogram, literal_value, mask_2);
 	}
-	else
-	{
-		return 0;
-		//return log2_fast((float)(mtf_value_1 + 1)) + log2_fast((float)(mtf_value_2 + 1));
-	}
+    return 0;
 }
 
 template <typename T1, typename T2>
@@ -808,9 +799,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
 		Mtf mtf_weights;
 		Mtf mtf_endpoints;
+		Histo histogram;
 
 		mtf_init(&mtf_weights, MAX_MTF_SIZE);
 		mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
+		histo_reset(&histogram);
 
 		// Helper function to process a single block
 		auto process_block = [&](size_t block_index, bool is_forward)
@@ -878,7 +871,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
 			int mtf_endpoints_pos = mtf_search(&mtf_endpoints, current_bits, endpoints_mask);
-			float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+			float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 
 			struct Candidate
 			{
@@ -912,8 +905,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			};
 
 			// Add the current block to the candidates
-			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_weights_pos, current_bits, &mtf_weights, weights_mask), mtf_weights_pos);
-			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_endpoints_pos, current_bits, &mtf_endpoints, endpoints_mask), mtf_endpoints_pos);
+			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_weights_pos, current_bits, &mtf_weights, weights_mask, &histogram), mtf_weights_pos);
+			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_endpoints_pos, current_bits, &mtf_endpoints, endpoints_mask, &histogram), mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
 			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits);
@@ -924,8 +917,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
-			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_weights_pos_ref1, ref1_bits, &mtf_weights, ref1_weight_mask), mtf_weights_pos_ref1);
-			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref1, ref1_bits, &mtf_endpoints, ref1_endpoint_mask), mtf_endpoints_pos_ref1);
+			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_weights_pos_ref1, ref1_bits, &mtf_weights, ref1_weight_mask, &histogram), mtf_weights_pos_ref1);
+			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref1, ref1_bits, &mtf_endpoints, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
 
 			// Add ref2
 			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits);
@@ -936,8 +929,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
-			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost(mtf_weights_pos_ref2, ref2_bits, &mtf_weights, ref2_weight_mask), mtf_weights_pos_ref2);
-			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref2, ref2_bits, &mtf_endpoints, ref2_endpoint_mask), mtf_endpoints_pos_ref2);
+			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost(mtf_weights_pos_ref2, ref2_bits, &mtf_weights, ref2_weight_mask, &histogram), mtf_weights_pos_ref2);
+			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref2, ref2_bits, &mtf_endpoints, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
 			for (int k = 0; k < mtf_endpoints.size; k++)
@@ -952,7 +945,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 				float mse = get_or_compute_mse(candidate_endpoints);
 
-				float bit_cost = calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask);
+				float bit_cost = calculate_bit_cost(k, candidate_endpoints, &mtf_endpoints, endpoints_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_endpoints if it's one of the best candidates
@@ -990,7 +983,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 				}
 
-				float bit_cost = calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask);
+				float bit_cost = calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_weights if it's one of the best candidates
@@ -1024,7 +1017,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 					}
 
-					float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+					float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 
 					if (rd_cost < best_rd_cost)
 					{
@@ -1052,7 +1045,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 					}
 
-					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask);
+					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 
 					if (rd_cost < best_rd_cost)
 					{
@@ -1071,8 +1064,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			Int128 best_weights_mask, best_endpoints_mask;
 			calculate_masks(best_weight_bits, best_weights_mask, best_endpoints_mask);
 
-			histo_update(&mtf_weights.histogram, best_match, Int128::from_int(0).bitwise_not());
-			histo_update(&mtf_endpoints.histogram, best_match, Int128::from_int(0).bitwise_not());
+			histo_update(&histogram, best_match, Int128::from_int(0).bitwise_not());
 			mtf_encode(&mtf_weights, best_match, best_weights_mask);
 			mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
 		};
