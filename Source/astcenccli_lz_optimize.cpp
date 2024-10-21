@@ -942,8 +942,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				// Not worth a kraken match
 				if (endpoints_weight_bits < 24 && endpoints_weight_bits > 0)
 					continue;
-				if (endpoints_weight_bits < current_weight_bits)
-					continue;
+				//if (endpoints_weight_bits < current_weight_bits)
+					//continue;
 
 				float mse = get_or_compute_mse(candidate_endpoints);
 
@@ -1381,7 +1381,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	float lambda_0 = 0.0f;
 	float lambda_5 = 0.175f;
 	float lambda_10 = 0.275f;
-	float lambda_40 = 0.75f;
+	float lambda_40 = 0.725f;
 
 	if (lambda <= 0.0f)
 	{
