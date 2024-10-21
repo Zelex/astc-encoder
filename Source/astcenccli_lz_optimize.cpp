@@ -181,8 +181,8 @@ public:
 	}
 };
 
-#define MAX_MTF_SIZE (256 + 64 + 16 + 1)
-// #define MAX_MTF_SIZE (1024+256+64+16+1)
+// #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
+#define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
@@ -336,7 +336,6 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 		// float cost_2 = 0.f + log2_fast((float)(mtf_value_1 + 1)) + histo_cost(&mtf_2->histogram, literal_value, mask_2);
 		// return cost_1 < cost_2 ? cost_1 : cost_2;
 		return log2_fast((float)(mtf_value_1 + 1)) + log2_fast((float)(mtf_value_2 + 1));
-		// return log2_fast((float)(mtf_value_1 + mtf_value_2 + 1));
 	}
 }
 
@@ -1336,9 +1335,9 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 
 	// Map lambda from [10, 40] to ...
 	float lambda_0 = 0.0f;
-	float lambda_5 = 0.2f;
-	float lambda_10 = 0.325f;
-	float lambda_40 = 0.85f;
+	float lambda_5 = 0.175f;
+	float lambda_10 = 0.3f;
+	float lambda_40 = 0.825f;
 
 	if (lambda <= 0.0f)
 	{
