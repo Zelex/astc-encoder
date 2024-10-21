@@ -310,7 +310,7 @@ static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf*
 	Int128 masked_literal = literal_value.bitwise_and(mask);
 	if (mtf_value == -1)
 		return histo_cost(histogram, masked_literal, mask);
-	return 0;
+	return log2_fast(mtf_value + 1.f);
 }
 
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
@@ -321,13 +321,13 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 	}
 	else if (mtf_value_1 == -1)
 	{
-		return histo_cost(histogram, literal_value, mask_1);
+		return histo_cost(histogram, literal_value, mask_1) + log2_fast(mtf_value_2 + 1.f);
 	}
 	else if (mtf_value_2 == -1)
 	{
-		return histo_cost(histogram, literal_value, mask_2);
+		return histo_cost(histogram, literal_value, mask_2) + log2_fast(mtf_value_1 + 1.f);
 	}
-	return 0;
+	return log2_fast(mtf_value_1 + 1.f) + log2_fast(mtf_value_2 + 1.f);
 }
 
 template <typename T1, typename T2>
@@ -1001,12 +1001,18 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				int candidate_mode = (candidate_weights.get_byte(0) | (candidate_weights.get_byte(1) << 8)) & 0x7FF;
 
 				// Check if the candidate mode matches any of the unique modes from best endpoints
+				// and construct the temporary block in the same loop
 				bool mode_match = false;
+				Int128 weights_mask, endpoints_mask;
+				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
+				Int128 temp_bits = candidate_weights.bitwise_and(weights_mask);
+
 				for (int m = 0; m < unique_mode_count; m++)
 				{
 					if (candidate_mode == unique_modes[m])
 					{
 						mode_match = true;
+						temp_bits = temp_bits.bitwise_or(unique_mode_bits[m].bitwise_and(endpoints_mask));
 						break;
 					}
 				}
@@ -1015,14 +1021,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				if (!mode_match)
 					continue;
 
-				Int128 weights_mask, endpoints_mask;
-				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
-
 				uint8_t temp_block[16];
-				memcpy(temp_block, current_block, 16);
-				Int128* temp_bits = (Int128*)temp_block;
-				*temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(unique_mode_bits[m].bitwise_and(endpoints_mask));
-
+				temp_bits.to_bytes(temp_block);
 				astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
 				float mse;
