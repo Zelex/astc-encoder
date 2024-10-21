@@ -878,11 +878,12 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				Int128 bits;
 				float rd_cost;
 				int mtf_position;
+				int mode;
 			};
 			Candidate best_weights[BEST_CANDIDATES_COUNT];
 			Candidate best_endpoints[BEST_CANDIDATES_COUNT];
-			int weights_count = 0;
 			int endpoints_count = 0;
+			int weights_count = 0;
 
 			auto add_candidate = [](Candidate* candidates, int& count, const Int128& bits, float rd_cost, int mtf_position)
 			{
@@ -897,7 +898,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						insert_pos--;
 					}
 
-					candidates[insert_pos] = {bits, rd_cost, mtf_position};
+					int mode = (bits.get_byte(0) | (bits.get_byte(1) << 8)) & 0x7FF;
+					candidates[insert_pos] = {bits, rd_cost, mtf_position, mode};
 
 					if (count < BEST_CANDIDATES_COUNT)
 						count++;
@@ -952,24 +954,74 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				add_candidate(best_endpoints, endpoints_count, candidate_endpoints, rd_cost, k);
 			}
 
-			// Best of best endpoint candidate
-			Int128 best_endpoints_bits = best_endpoints[0].bits;
-			int best_endpoints_weight_bits = get_bits_and_weight_bits((uint8_t*)&best_endpoints_bits, weight_bits).weight_bits;
-			Int128 best_endpoints_weight_mask, best_endpoints_endpoint_mask;
-			calculate_masks(best_endpoints_weight_bits, best_endpoints_weight_mask, best_endpoints_endpoint_mask);
+			// Find unique modes from best endpoint candidates
+			int unique_modes[BEST_CANDIDATES_COUNT];
+			Int128 unique_mode_bits[BEST_CANDIDATES_COUNT];
+			float unique_mode_costs[BEST_CANDIDATES_COUNT];
+			int unique_mode_count = 0;
+
+			for (int i = 0; i < endpoints_count; i++)
+			{
+				int current_mode = best_endpoints[i].mode;
+				int is_unique = 1;
+				int existing_index = -1;
+
+				for (int j = 0; j < unique_mode_count; j++)
+				{
+					if (unique_modes[j] == current_mode)
+					{
+						is_unique = 0;
+						existing_index = j;
+						break;
+					}
+				}
+
+				if (is_unique)
+				{
+					unique_modes[unique_mode_count] = current_mode;
+					unique_mode_bits[unique_mode_count] = best_endpoints[i].bits;
+					unique_mode_costs[unique_mode_count] = best_endpoints[i].rd_cost;
+					unique_mode_count++;
+				}
+				else if (best_endpoints[i].rd_cost < unique_mode_costs[existing_index])
+				{
+					// Update with better performing bits for the same mode
+					unique_mode_bits[existing_index] = best_endpoints[i].bits;
+					unique_mode_costs[existing_index] = best_endpoints[i].rd_cost;
+				}
+			}
 
 			// Find best weight candidates
 			for (int k = 0; k < mtf_weights.size; k++)
 			{
 				Int128 candidate_weights = mtf_weights.list[k];
 				int weights_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits).weight_bits;
-				if (weights_weight_bits < best_endpoints_weight_bits)
+
+				// Extract the mode from the candidate weights
+				int candidate_mode = (candidate_weights.get_byte(0) | (candidate_weights.get_byte(1) << 8)) & 0x7FF;
+
+				// Check if the candidate mode matches any of the unique modes from best endpoints
+				bool mode_match = false;
+				for (int m = 0; m < unique_mode_count; m++)
+				{
+					if (candidate_mode == unique_modes[m])
+					{
+						mode_match = true;
+						break;
+					}
+				}
+
+				// If there's no mode match, skip this candidate
+				if (!mode_match)
 					continue;
+
+				Int128 weights_mask, endpoints_mask;
+				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
 				uint8_t temp_block[16];
 				memcpy(temp_block, current_block, 16);
 				Int128* temp_bits = (Int128*)temp_block;
-				*temp_bits = candidate_weights.bitwise_and(best_endpoints_weight_mask).bitwise_or(best_endpoints_bits.bitwise_and(best_endpoints_endpoint_mask));
+				*temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(unique_mode_bits[m].bitwise_and(endpoints_mask));
 
 				astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
@@ -1303,11 +1355,11 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	// Map x |-> C1/(C2 + sqrt(x))
 	float C1 = 256.0f;
 	float C2 = 1.0f;
-	float activity_scalar = 4.f;
+	float activity_scalar = 3.0f;
 	for (size_t i = 0; i < pixel_count; i++)
 	{
 		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
-		output[i] = astc::max(output[i], 1.0f);
+		// output[i] = astc::max(output[i], 1.f);
 	}
 
 	free(blurred);
