@@ -186,6 +186,7 @@ public:
 #define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
+#define MODE_MATCH_MASK (0x7FF)
 
 struct Histo
 {
@@ -898,7 +899,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						insert_pos--;
 					}
 
-					int mode = (bits.get_byte(0) | (bits.get_byte(1) << 8)) & 0x7FF;
+					int mode = (bits.get_byte(0) | (bits.get_byte(1) << 8)) & MODE_MATCH_MASK;
 					candidates[insert_pos] = {bits, rd_cost, mtf_position, mode};
 
 					if (count < BEST_CANDIDATES_COUNT)
@@ -952,43 +953,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				add_candidate(best_endpoints, endpoints_count, candidate_endpoints, rd_cost, k);
 			}
 
-			// Find unique modes from best endpoint candidates
-			int unique_modes[BEST_CANDIDATES_COUNT];
-			Int128 unique_mode_bits[BEST_CANDIDATES_COUNT];
-			float unique_mode_costs[BEST_CANDIDATES_COUNT];
-			int unique_mode_count = 0;
-
-			for (int i = 0; i < endpoints_count; i++)
-			{
-				int current_mode = best_endpoints[i].mode;
-				int is_unique = 1;
-				int existing_index = -1;
-
-				for (int j = 0; j < unique_mode_count; j++)
-				{
-					if (unique_modes[j] == current_mode)
-					{
-						is_unique = 0;
-						existing_index = j;
-						break;
-					}
-				}
-
-				if (is_unique)
-				{
-					unique_modes[unique_mode_count] = current_mode;
-					unique_mode_bits[unique_mode_count] = best_endpoints[i].bits;
-					unique_mode_costs[unique_mode_count] = best_endpoints[i].rd_cost;
-					unique_mode_count++;
-				}
-				else if (best_endpoints[i].rd_cost < unique_mode_costs[existing_index])
-				{
-					// Update with better performing bits for the same mode
-					unique_mode_bits[existing_index] = best_endpoints[i].bits;
-					unique_mode_costs[existing_index] = best_endpoints[i].rd_cost;
-				}
-			}
-
 			// Find best weight candidates
 			for (int k = 0; k < mtf_weights.size; k++)
 			{
@@ -996,48 +960,39 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				int weights_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits).weight_bits;
 
 				// Extract the mode from the candidate weights
-				int candidate_mode = (candidate_weights.get_byte(0) | (candidate_weights.get_byte(1) << 8)) & 0x7FF;
+				int candidate_mode = (candidate_weights.get_byte(0) | (candidate_weights.get_byte(1) << 8)) & MODE_MATCH_MASK;
 
-				// Check if the candidate mode matches any of the unique modes from best endpoints
-				// and construct the temporary block in the same loop
-				bool mode_match = false;
 				Int128 weights_mask, endpoints_mask;
 				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 				Int128 temp_bits = candidate_weights.bitwise_and(weights_mask);
 
-				for (int m = 0; m < unique_mode_count; m++)
+				// Try every mode that matches in the best set
+				for (int m = 0; m < endpoints_count; m++)
 				{
-					if (candidate_mode == unique_modes[m])
+					if (candidate_mode == best_endpoints[m].mode)
 					{
-						mode_match = true;
-						temp_bits = temp_bits.bitwise_or(unique_mode_bits[m].bitwise_and(endpoints_mask));
-						break;
+						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
+						uint8_t temp_block[16];
+						combined_bits.to_bytes(temp_block);
+						astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+						float mse;
+						if (block_type == ASTCENC_TYPE_U8)
+						{
+							mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+						}
+						else
+						{
+							mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+						}
+
+						float bit_cost = calculate_bit_cost_2(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+						float rd_cost = mse + lambda * bit_cost;
+
+						// Insert into best_weights if it's one of the best candidates
+						add_candidate(best_weights, weights_count, candidate_weights, rd_cost, k);
 					}
 				}
-
-				// If there's no mode match, skip this candidate
-				if (!mode_match)
-					continue;
-
-				uint8_t temp_block[16];
-				temp_bits.to_bytes(temp_block);
-				astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-				float mse;
-				if (block_type == ASTCENC_TYPE_U8)
-				{
-					mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-				}
-				else
-				{
-					mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-				}
-
-				float bit_cost = calculate_bit_cost(k, candidate_weights, &mtf_weights, weights_mask, &histogram);
-				float rd_cost = mse + lambda * bit_cost;
-
-				// Insert into best_weights if it's one of the best candidates
-				add_candidate(best_weights, weights_count, candidate_weights, rd_cost, k);
 			}
 
 			// Search through combinations of best candidates
@@ -1325,25 +1280,29 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
 }
 
 template <typename T>
-void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, int channels, float sigma_highpass, float sigma_blur)
+void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, float sigma_highpass, float sigma_blur, const vfloat4& channel_weights)
 {
 	size_t pixel_count = width * height * depth;
-	size_t image_size = pixel_count * channels;
+	size_t image_size = pixel_count * 4;
 	T* blurred = (T*)malloc(image_size * sizeof(T));
 	float* squared_diff = (float*)malloc(pixel_count * sizeof(float));
 
 	// Apply initial Gaussian blur for high-pass filter
-	gaussian_blur_3d(input, blurred, width, height, depth, channels, sigma_highpass);
+	gaussian_blur_3d(input, blurred, width, height, depth, 4, sigma_highpass);
 
-	// Calculate squared differences (combined across channels)
+	// Calculate squared differences (combined across channels, using channel weights)
 	for (size_t i = 0; i < pixel_count; i++)
 	{
+		float diff_r = (float)input[i * 4 + 0] - (float)blurred[i * 4 + 0];
+		float diff_g = (float)input[i * 4 + 1] - (float)blurred[i * 4 + 1];
+		float diff_b = (float)input[i * 4 + 2] - (float)blurred[i * 4 + 2];
+		float diff_a = (float)input[i * 4 + 3] - (float)blurred[i * 4 + 3];
+
 		float diff_sum = 0;
-		for (int c = 0; c < channels; c++)
-		{
-			float diff = (float)input[i * channels + c] - (float)blurred[i * channels + c];
-			diff_sum += diff * diff;
-		}
+		diff_sum += diff_r * diff_r * channel_weights.lane<0>();
+		diff_sum += diff_g * diff_g * channel_weights.lane<1>();
+		diff_sum += diff_b * diff_b * channel_weights.lane<2>();
+		diff_sum += diff_a * diff_a * channel_weights.lane<3>();
 		squared_diff[i] = diff_sum;
 	}
 
@@ -1353,7 +1312,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	// Map x |-> C1/(C2 + sqrt(x))
 	float C1 = 256.0f;
 	float C2 = 1.0f;
-	float activity_scalar = 3.0f;
+	float activity_scalar = 3.0f * 2;
 	for (size_t i = 0; i < pixel_count; i++)
 	{
 		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
@@ -1441,7 +1400,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 		reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
+		high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights);
 	}
 	else
 	{
@@ -1449,7 +1408,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 		reconstruct_image((float*)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float*)reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 4, 2.2f, 1.25f);
+		high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights);
 	}
 
 	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image, channel_weights);
