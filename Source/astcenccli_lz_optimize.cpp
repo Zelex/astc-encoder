@@ -945,7 +945,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				Int128 weights_mask, endpoints_mask;
 				calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 				float mse = get_or_compute_mse(candidate_endpoints);
-				float bit_cost = calculate_bit_cost_2(k, k, candidate_endpoints, &mtf_endpoints, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				
+				// Find the corresponding weight position
+				int weight_pos = mtf_search(&mtf_weights, candidate_endpoints, weights_mask);
+				
+				float bit_cost = calculate_bit_cost_2(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_endpoints if it's one of the best candidates
