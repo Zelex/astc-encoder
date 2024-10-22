@@ -186,7 +186,7 @@ public:
 #define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
-#define MODE_MATCH_MASK (0x7FF)
+#define MODE_MASK (0x7FF)
 
 struct Histo
 {
@@ -743,7 +743,6 @@ void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block
 }
 #endif
 
-// Define a work item structure
 struct WorkItem
 {
 	size_t start_block;
@@ -751,7 +750,7 @@ struct WorkItem
 	bool is_forward;
 };
 
-static void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpoints_mask)
+static inline void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpoints_mask)
 {
 	Int128 one = Int128::from_int(1);
 	weights_mask = one.shift_left(weight_bits).subtract(one).shift_left(128 - weight_bits);
@@ -764,11 +763,11 @@ struct BitsAndWeightBits
 	int weight_bits;
 };
 
-static BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, const uint8_t* weight_bits)
+static inline BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, const uint8_t* weight_bits_tbl)
 {
 	BitsAndWeightBits result;
 	result.bits = Int128(block);
-	result.weight_bits = weight_bits[(block[0] | (block[1] << 8)) & 0x7ff];
+	result.weight_bits = weight_bits_tbl[(block[0] | (block[1] << 8)) & MODE_MASK];
 	return result;
 }
 
@@ -780,13 +779,13 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
 
 	// Initialize weight bits table
-	uint8_t* weight_bits = (uint8_t*)malloc(2048);
+	uint8_t* weight_bits_tbl = (uint8_t*)malloc(2048);
 	for (size_t i = 0; i < 2048; ++i)
 	{
 		uint8_t block[16];
 		block[0] = (i & 255);
 		block[1] = ((i >> 8) & 255);
-		weight_bits[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
+		weight_bits_tbl[i] = get_weight_bits(&block[0], block_width, block_height, block_depth);
 	}
 
 	std::queue<WorkItem> work_queue;
@@ -810,7 +809,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		auto process_block = [&](size_t block_index, bool is_forward)
 		{
 			uint8_t* current_block = data + block_index * block_size;
-			BitsAndWeightBits current = get_bits_and_weight_bits(current_block, weight_bits);
+			BitsAndWeightBits current = get_bits_and_weight_bits(current_block, weight_bits_tbl);
 			Int128 current_bits = current.bits;
 			int current_weight_bits = current.weight_bits;
 			Int128 best_match = current_bits;
@@ -880,13 +879,14 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				float rd_cost;
 				int mtf_position;
 				int mode;
+				int weight_bits;
 			};
 			Candidate best_weights[BEST_CANDIDATES_COUNT];
 			Candidate best_endpoints[BEST_CANDIDATES_COUNT];
 			int endpoints_count = 0;
 			int weights_count = 0;
 
-			auto add_candidate = [](Candidate* candidates, int& count, const Int128& bits, float rd_cost, int mtf_position)
+			auto add_candidate = [&](Candidate* candidates, int& count, const Int128& bits, float rd_cost, int mtf_position)
 			{
 				if (count < BEST_CANDIDATES_COUNT || rd_cost < candidates[BEST_CANDIDATES_COUNT - 1].rd_cost)
 				{
@@ -899,8 +899,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						insert_pos--;
 					}
 
-					int mode = (bits.get_byte(0) | (bits.get_byte(1) << 8)) & MODE_MATCH_MASK;
-					candidates[insert_pos] = {bits, rd_cost, mtf_position, mode};
+					int mode = (bits.get_byte(0) | (bits.get_byte(1) << 8)) & MODE_MASK;
+					int weight_bits = get_bits_and_weight_bits((uint8_t*)&bits, weight_bits_tbl).weight_bits;
+					candidates[insert_pos] = {bits, rd_cost, mtf_position, mode, weight_bits};
 
 					if (count < BEST_CANDIDATES_COUNT)
 						count++;
@@ -912,7 +913,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost(mtf_endpoints_pos, current_bits, &mtf_endpoints, endpoints_mask, &histogram), mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
-			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits);
+			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits_tbl);
 			Int128 ref1_bits = ref1_wb.bits;
 			int ref1_weight_bits = ref1_wb.weight_bits;
 			Int128 ref1_weight_mask, ref1_endpoint_mask;
@@ -924,7 +925,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost(mtf_endpoints_pos_ref1, ref1_bits, &mtf_endpoints, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
 
 			// Add ref2
-			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits);
+			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits_tbl);
 			Int128 ref2_bits = ref2_wb.bits;
 			int ref2_weight_bits = ref2_wb.weight_bits;
 			Int128 ref2_weight_mask, ref2_endpoint_mask;
@@ -939,7 +940,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			for (int k = 0; k < mtf_endpoints.size; k++)
 			{
 				Int128 candidate_endpoints = mtf_endpoints.list[k];
-				int endpoints_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_endpoints, weight_bits).weight_bits;
+				int endpoints_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_endpoints, weight_bits_tbl).weight_bits;
 				// Not worth a kraken match
 				if (endpoints_weight_bits < 24 && endpoints_weight_bits > 0)
 					continue;
@@ -957,19 +958,17 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			for (int k = 0; k < mtf_weights.size; k++)
 			{
 				Int128 candidate_weights = mtf_weights.list[k];
-				int weights_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits).weight_bits;
-
-				// Extract the mode from the candidate weights
-				int candidate_mode = (candidate_weights.get_byte(0) | (candidate_weights.get_byte(1) << 8)) & MODE_MATCH_MASK;
+				int weights_weight_bits = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits_tbl).weight_bits;
 
 				Int128 weights_mask, endpoints_mask;
 				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 				Int128 temp_bits = candidate_weights.bitwise_and(weights_mask);
 
-				// Try every mode that matches in the best set
+				// Try every endpoint candidate that matches in weight bits
 				for (int m = 0; m < endpoints_count; m++)
 				{
-					if (candidate_mode == best_endpoints[m].mode)
+					int endpoint_weight_bits = best_endpoints[m].weight_bits;
+					if (weights_weight_bits == endpoint_weight_bits)
 					{
 						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
 						uint8_t temp_block[16];
@@ -1001,8 +1000,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				for (int j = 0; j < endpoints_count; j++)
 				{
 					Int128 candidate_endpoints = best_endpoints[j].bits;
-					BitsAndWeightBits endpoints_wb = get_bits_and_weight_bits((uint8_t*)&candidate_endpoints, weight_bits);
-					int endpoints_weight_bits = endpoints_wb.weight_bits;
+					int endpoints_weight_bits = best_endpoints[j].weight_bits;
 					Int128 weights_mask, endpoints_mask;
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
@@ -1032,8 +1030,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					// now do the same thing for weights
 					Int128 candidate_weights = best_weights[i].bits;
-					BitsAndWeightBits weights_wb = get_bits_and_weight_bits((uint8_t*)&candidate_weights, weight_bits);
-					int weights_weight_bits = weights_wb.weight_bits;
+					int weights_weight_bits = best_weights[i].weight_bits;
 					calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
 					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
@@ -1064,7 +1061,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				best_match.to_bytes(current_block);
 
 			// Recalculate masks for the best match
-			BitsAndWeightBits best_match_wb = get_bits_and_weight_bits(current_block, weight_bits);
+			BitsAndWeightBits best_match_wb = get_bits_and_weight_bits(current_block, weight_bits_tbl);
 			int best_weight_bits = best_match_wb.weight_bits;
 			Int128 best_weights_mask, best_endpoints_mask;
 			calculate_masks(best_weight_bits, best_weights_mask, best_endpoints_mask);
@@ -1143,7 +1140,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	// Run forward pass
 	run_pass(true);
 
-	free(weight_bits);
+	free(weight_bits_tbl);
 }
 
 template <typename T>
