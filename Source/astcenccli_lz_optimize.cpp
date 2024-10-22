@@ -909,8 +909,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			};
 
 			// Add the current block to the candidates
-			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_weights_pos, current_bits, &mtf_weights, &mtf_weights, weights_mask, endpoints_mask, &histogram), mtf_weights_pos);
-			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_endpoints_pos, mtf_endpoints_pos, current_bits, &mtf_endpoints, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_endpoints_pos);
+			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_weights_pos);
+			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
 			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits_tbl);
@@ -921,8 +921,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
-			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref1, mtf_weights_pos_ref1, ref1_bits, &mtf_weights, &mtf_weights, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
-			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_endpoints_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_endpoints, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
+			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
+			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
 
 			// Add ref2
 			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits_tbl);
@@ -933,8 +933,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
-			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref2, mtf_weights_pos_ref2, ref2_bits, &mtf_weights, &mtf_weights, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
-			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_endpoints_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_endpoints, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
+			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
+			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
 			for (int k = 0; k < mtf_endpoints.size; k++)
