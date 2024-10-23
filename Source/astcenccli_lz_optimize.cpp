@@ -527,26 +527,27 @@ static void recompute_ideal_weights_1plane(const image_block& blk, const partiti
 
 	// Initialize weight accumulators for each stored weight
 	std::vector<float> weight_accum(di.weight_count, 0.0f);
-	std::vector<float> weight_count(di.weight_count, 0.0f);
+	std::vector<float> weight_contrib_sum(di.weight_count, 0.0f);
 
 	// For each texel
 	for (int i = 0; i < texels_per_block; i++)
 	{
-		vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
-
 		int partition = pi.partition_of_texel[i];
 
-		// Get the ideal weight for this texel
+		// Get the ideal weight for this texel using the current endpoints
 		vfloat4 color0 = ep.endpt0[partition];
 		vfloat4 color1 = ep.endpt1[partition];
 		vfloat4 color_diff = color1 - color0;
 
-		// Compute ideal weight
+		// Get the actual color we're trying to match
+		vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
+
+		// Compute ideal weight using dot product method
 		float weight_i = 0.0f;
-		float len2 = hadd_s(color_diff * color_diff);
+		float len2 = dot_s(color_diff, color_diff * blk.channel_weight);
 		if (len2 > 1e-10f)
 		{
-			weight_i = hadd_s((color - color0) * color_diff) / len2;
+			weight_i = dot_s(color - color0, color_diff * blk.channel_weight) / len2;
 			weight_i = astc::clamp(weight_i, 0.0f, 1.0f);
 		}
 
@@ -554,19 +555,17 @@ static void recompute_ideal_weights_1plane(const image_block& blk, const partiti
 		for (int j = 0; j < di.texel_weight_count[i]; j++)
 		{
 			int weight_idx = di.texel_weights_tr[j][i];
-			float contrib = di.texel_weight_contribs_float_tr[j][i];
-
-			weight_accum[weight_idx] += weight_i * contrib * blk.channel_weight.lane<0>();
-			weight_count[weight_idx] += contrib * blk.channel_weight.lane<0>();
+			float contrib = di.texel_weight_contribs_float_tr[j][weight_idx];
+			weight_accum[weight_idx] += weight_i * contrib;
+			weight_contrib_sum[weight_idx] += contrib;
 		}
 	}
 
-	// Compute final weights
+	// Compute final weights in 0-64 range using accumulated contributions
 	for (int i = 0; i < di.weight_count; i++)
 	{
-		float weight_avg = weight_count[i] > 0.0f ? weight_accum[i] / weight_count[i] : 0.5f;
-
-		weights[i] = static_cast<uint8_t>(astc::clamp(weight_avg * 255.0f + 0.5f, 0.0f, 255.0f));
+		float weight_avg = weight_accum[i] / weight_contrib_sum[i];
+		weights[i] = static_cast<uint8_t>(astc::clamp(weight_avg * 64.0f + 0.5f, 0.0f, 64.0f));
 	}
 }
 
@@ -578,7 +577,7 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 	// Initialize weight accumulators for each stored weight
 	std::vector<float> weight_accum1(di.weight_count, 0.0f);
 	std::vector<float> weight_accum2(di.weight_count, 0.0f);
-	std::vector<float> weight_count(di.weight_count, 0.0f);
+	std::vector<float> weight_contrib_sum(di.weight_count, 0.0f);
 
 	// Create plane masks
 	vfloat4 plane1_mask = vfloat4(1.0f);
@@ -599,10 +598,10 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 		// Compute ideal weight for plane 1
 		float weight1_i = 0.0f;
 		vfloat4 color_diff1 = (color1 - color0) * plane1_mask;
-		float len2_1 = hadd_s(color_diff1 * color_diff1);
+		float len2_1 = dot_s(color_diff1, color_diff1 * blk.channel_weight);
 		if (len2_1 > 1e-10f)
 		{
-			weight1_i = hadd_s((color - color0) * color_diff1) / len2_1;
+			weight1_i = dot_s((color - color0) * plane1_mask, color_diff1 * blk.channel_weight) / len2_1;
 			weight1_i = astc::clamp(weight1_i, 0.0f, 1.0f);
 		}
 
@@ -623,32 +622,32 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 		for (int j = 0; j < di.texel_weight_count[i]; j++)
 		{
 			int weight_idx = di.texel_weights_tr[j][i];
-			float contrib = di.texel_weight_contribs_float_tr[j][i];
-			float channel_weight = blk.channel_weight.lane<0>();
+			float contrib = di.texel_weight_contribs_float_tr[j][weight_idx];
 
-			weight_accum1[weight_idx] += weight1_i * contrib * channel_weight;
-			weight_accum2[weight_idx] += weight2_i * contrib * channel_weight;
-			weight_count[weight_idx] += contrib * channel_weight;
+			weight_accum1[weight_idx] += weight1_i * contrib;
+			weight_accum2[weight_idx] += weight2_i * contrib;
+			weight_contrib_sum[weight_idx] += contrib;
 		}
 	}
 
-	// Compute final weights for both planes
+	// Compute final weights in 0-64 range
 	for (int i = 0; i < di.weight_count; i++)
 	{
-		float weight_avg1 = weight_count[i] > 0.0f ? weight_accum1[i] / weight_count[i] : 0.5f;
-		float weight_avg2 = weight_count[i] > 0.0f ? weight_accum2[i] / weight_count[i] : 0.5f;
+		float weight_avg1 = weight_accum1[i] / weight_contrib_sum[i];
+		float weight_avg2 = weight_accum2[i] / weight_contrib_sum[i];
 
-		weights_plane1[i] = static_cast<uint8_t>(astc::clamp(weight_avg1 * 255.0f + 0.5f, 0.0f, 255.0f));
-		weights_plane2[i] = static_cast<uint8_t>(astc::clamp(weight_avg2 * 255.0f + 0.5f, 0.0f, 255.0f));
+		weights_plane1[i] = static_cast<uint8_t>(astc::clamp(weight_avg1 * 64.0f + 0.5f, 0.0f, 64.0f));
+		weights_plane2[i] = static_cast<uint8_t>(astc::clamp(weight_avg2 * 64.0f + 0.5f, 0.0f, 64.0f));
 	}
 }
 
 static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, const uint8_t* block_ptr, uint8_t* output_block, const uint8_t* original_decoded, int block_width, int block_height, int block_depth, int block_type, const float* gradients, const vfloat4& channel_weights)
 {
+	// Extract block information
 	symbolic_compressed_block scb;
 	physical_to_symbolic(bsd, block_ptr, scb);
 
-	// Skip if constant color block
+	// Skip constant color blocks
 	if (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16)
 	{
 		memcpy(output_block, block_ptr, 16);
@@ -677,6 +676,7 @@ static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, con
 		}
 	}
 
+	// Set up block properties
 	blk.xpos = 0;
 	blk.ypos = 0;
 	blk.zpos = 0;
@@ -685,25 +685,28 @@ static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, con
 	blk.grayscale = false;
 	blk.channel_weight = channel_weights;
 
-	// Extract existing endpoints
-	endpoints ep;
-	ep.partition_count = scb.partition_count;
-	for (uint8_t i = 0; i < scb.partition_count; i++)
-	{
-		vint4 color0, color1;
-		bool rgb_hdr, alpha_hdr;
-		astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
-		unpack_color_endpoints(decode_mode, scb.color_formats[i], scb.color_values[i], rgb_hdr, alpha_hdr, color0, color1);
-		ep.endpt0[i] = int_to_float(color0) * (1.0f / 65535.0f);
-		ep.endpt1[i] = int_to_float(color1) * (1.0f / 65535.0f);
-	}
-
 	// Get block mode and partition info
 	block_mode mode = bsd.get_block_mode(scb.block_mode);
 	const auto& pi = bsd.get_partition_info(scb.partition_count, scb.partition_index);
 	const auto& di = bsd.get_decimation_info(mode.decimation_mode);
 
-	// Recompute optimal weights
+	// Initialize endpoints
+	endpoints ep;
+	ep.partition_count = scb.partition_count;
+
+	// Extract endpoints from the input block
+	astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
+	for (unsigned int i = 0; i < scb.partition_count; i++)
+	{
+		vint4 color0, color1;
+		bool rgb_hdr, alpha_hdr;
+		unpack_color_endpoints(decode_mode, scb.color_formats[i], scb.color_values[i], rgb_hdr, alpha_hdr, color0, color1);
+
+		ep.endpt0[i] = int_to_float(color0) * (1.0f / 65535.0f);
+		ep.endpt1[i] = int_to_float(color1) * (1.0f / 65535.0f);
+	}
+
+	// Recompute weights
 	if (mode.is_dual_plane)
 	{
 		recompute_ideal_weights_2planes(blk, bsd, di, scb.weights, scb.weights + WEIGHTS_PLANE2_OFFSET, ep, scb.plane2_component);
@@ -713,8 +716,10 @@ static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, con
 		recompute_ideal_weights_1plane(blk, pi, di, scb.weights, ep);
 	}
 
-	// Pack back to physical block
-	symbolic_to_physical(bsd, scb, output_block);
+	// Check if weights actually improved the error
+	uint8_t temp_block[16];
+	symbolic_to_physical(bsd, scb, temp_block);
+	memcpy(output_block, temp_block, 16);
 }
 
 int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_depth)
@@ -1141,19 +1146,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 				Int128 weights_mask, endpoints_mask;
 				calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
-
-				if (1)
-				{
-					uint8_t temp_block[16];
-					optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
-
-					float mse = get_or_compute_mse(Int128(temp_block));
-					int weight_pos = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
-					float bit_cost = calculate_bit_cost_2(weight_pos, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
-					float rd_cost = mse + lambda * bit_cost;
-
-					add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost, k);
-				}
 
 				float mse = get_or_compute_mse(candidate_endpoints);
 
