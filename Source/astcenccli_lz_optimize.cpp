@@ -181,7 +181,7 @@ public:
 	}
 };
 
-//#define MAX_MTF_SIZE (256 + 64 + 16 + 1)
+// #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
 #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
@@ -520,252 +520,201 @@ void process_and_recalculate_astc_block(const block_size_descriptor& bsd, uint8_
 	symbolic_to_physical(bsd, scb, block_ptr);
 }
 
-static void recompute_ideal_weights_1plane(
-    const image_block& blk,
-    const partition_info& pi,
-    const decimation_info& di,
-    uint8_t* weights,
-    const endpoints& ep)
+static void recompute_ideal_weights_1plane(const image_block& blk, const partition_info& pi, const decimation_info& di, uint8_t* weights, const endpoints& ep)
 {
-    int texels_per_block = blk.texel_count;
-    promise(texels_per_block > 0);
+	int texels_per_block = blk.texel_count;
+	promise(texels_per_block > 0);
 
-    // Initialize weight accumulators for each stored weight
-    std::vector<float> weight_accum(di.weight_count, 0.0f);
-    std::vector<float> weight_count(di.weight_count, 0.0f);
+	// Initialize weight accumulators for each stored weight
+	std::vector<float> weight_accum(di.weight_count, 0.0f);
+	std::vector<float> weight_count(di.weight_count, 0.0f);
 
-    // For each texel
-    for (int i = 0; i < texels_per_block; i++)
-    {
-        vfloat4 color = vfloat4(
-            blk.data_r[i],
-            blk.data_g[i],
-            blk.data_b[i],
-            blk.data_a[i]);
+	// For each texel
+	for (int i = 0; i < texels_per_block; i++)
+	{
+		vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
 
-        int partition = pi.partition_of_texel[i];
+		int partition = pi.partition_of_texel[i];
 
-        // Get the ideal weight for this texel
-        vfloat4 color0 = ep.endpt0[partition];
-        vfloat4 color1 = ep.endpt1[partition];
-        vfloat4 color_diff = color1 - color0;
+		// Get the ideal weight for this texel
+		vfloat4 color0 = ep.endpt0[partition];
+		vfloat4 color1 = ep.endpt1[partition];
+		vfloat4 color_diff = color1 - color0;
 
-        // Compute ideal weight
-        float weight_i = 0.0f;
-        float len2 = hadd_s(color_diff * color_diff);
-        if (len2 > 1e-10f)
-        {
-            weight_i = hadd_s((color - color0) * color_diff) / len2;
-            weight_i = astc::clamp(weight_i, 0.0f, 1.0f);
-        }
+		// Compute ideal weight
+		float weight_i = 0.0f;
+		float len2 = hadd_s(color_diff * color_diff);
+		if (len2 > 1e-10f)
+		{
+			weight_i = hadd_s((color - color0) * color_diff) / len2;
+			weight_i = astc::clamp(weight_i, 0.0f, 1.0f);
+		}
 
-        // For each weight that contributes to this texel
-        for (int j = 0; j < di.texel_weight_count[i]; j++)
-        {
-            int weight_idx = di.texel_weights_tr[j][i];
-            float contrib = di.texel_weight_contribs_float_tr[j][i];
-            
-            weight_accum[weight_idx] += weight_i * contrib * blk.channel_weight.lane<0>();
-            weight_count[weight_idx] += contrib * blk.channel_weight.lane<0>();
-        }
-    }
+		// For each weight that contributes to this texel
+		for (int j = 0; j < di.texel_weight_count[i]; j++)
+		{
+			int weight_idx = di.texel_weights_tr[j][i];
+			float contrib = di.texel_weight_contribs_float_tr[j][i];
 
-    // Compute final weights
-    for (int i = 0; i < di.weight_count; i++)
-    {
-        float weight_avg = weight_count[i] > 0.0f ? 
-            weight_accum[i] / weight_count[i] : 0.5f;
-            
-        weights[i] = static_cast<uint8_t>(astc::clamp(
-            weight_avg * 255.0f + 0.5f,
-            0.0f,
-            255.0f));
-    }
+			weight_accum[weight_idx] += weight_i * contrib * blk.channel_weight.lane<0>();
+			weight_count[weight_idx] += contrib * blk.channel_weight.lane<0>();
+		}
+	}
+
+	// Compute final weights
+	for (int i = 0; i < di.weight_count; i++)
+	{
+		float weight_avg = weight_count[i] > 0.0f ? weight_accum[i] / weight_count[i] : 0.5f;
+
+		weights[i] = static_cast<uint8_t>(astc::clamp(weight_avg * 255.0f + 0.5f, 0.0f, 255.0f));
+	}
 }
 
-static void recompute_ideal_weights_2planes(
-    const image_block& blk,
-    const block_size_descriptor& bsd,
-    const decimation_info& di,
-    uint8_t* weights_plane1,
-    uint8_t* weights_plane2,
-    const endpoints& ep,
-    int plane2_component)
+static void recompute_ideal_weights_2planes(const image_block& blk, const block_size_descriptor& bsd, const decimation_info& di, uint8_t* weights_plane1, uint8_t* weights_plane2, const endpoints& ep, int plane2_component)
 {
-    int texels_per_block = blk.texel_count;
-    promise(texels_per_block > 0);
+	int texels_per_block = blk.texel_count;
+	promise(texels_per_block > 0);
 
-    // Initialize weight accumulators for each stored weight
-    std::vector<float> weight_accum1(di.weight_count, 0.0f);
-    std::vector<float> weight_accum2(di.weight_count, 0.0f);
-    std::vector<float> weight_count(di.weight_count, 0.0f);
+	// Initialize weight accumulators for each stored weight
+	std::vector<float> weight_accum1(di.weight_count, 0.0f);
+	std::vector<float> weight_accum2(di.weight_count, 0.0f);
+	std::vector<float> weight_count(di.weight_count, 0.0f);
 
-    // Create plane masks
-    vfloat4 plane1_mask = vfloat4(1.0f);
-    plane1_mask.set_lane<0>(plane2_component == 0 ? 0.0f : 1.0f);
-    plane1_mask.set_lane<1>(plane2_component == 1 ? 0.0f : 1.0f);
-    plane1_mask.set_lane<2>(plane2_component == 2 ? 0.0f : 1.0f);
-    plane1_mask.set_lane<3>(plane2_component == 3 ? 0.0f : 1.0f);
+	// Create plane masks
+	vfloat4 plane1_mask = vfloat4(1.0f);
+	plane1_mask.set_lane<0>(plane2_component == 0 ? 0.0f : 1.0f);
+	plane1_mask.set_lane<1>(plane2_component == 1 ? 0.0f : 1.0f);
+	plane1_mask.set_lane<2>(plane2_component == 2 ? 0.0f : 1.0f);
+	plane1_mask.set_lane<3>(plane2_component == 3 ? 0.0f : 1.0f);
 
-    // For each texel
-    for (int i = 0; i < texels_per_block; i++)
-    {
-        vfloat4 color = vfloat4(
-            blk.data_r[i],
-            blk.data_g[i],
-            blk.data_b[i],
-            blk.data_a[i]);
+	// For each texel
+	for (int i = 0; i < texels_per_block; i++)
+	{
+		vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
 
-        // Get the ideal weights for this texel
-        vfloat4 color0 = ep.endpt0[0];
-        vfloat4 color1 = ep.endpt1[0];
+		// Get the ideal weights for this texel
+		vfloat4 color0 = ep.endpt0[0];
+		vfloat4 color1 = ep.endpt1[0];
 
-        // Compute ideal weight for plane 1
-        float weight1_i = 0.0f;
-        vfloat4 color_diff1 = (color1 - color0) * plane1_mask;
-        float len2_1 = hadd_s(color_diff1 * color_diff1);
-        if (len2_1 > 1e-10f)
-        {
-            weight1_i = hadd_s((color - color0) * color_diff1) / len2_1;
-            weight1_i = astc::clamp(weight1_i, 0.0f, 1.0f);
-        }
+		// Compute ideal weight for plane 1
+		float weight1_i = 0.0f;
+		vfloat4 color_diff1 = (color1 - color0) * plane1_mask;
+		float len2_1 = hadd_s(color_diff1 * color_diff1);
+		if (len2_1 > 1e-10f)
+		{
+			weight1_i = hadd_s((color - color0) * color_diff1) / len2_1;
+			weight1_i = astc::clamp(weight1_i, 0.0f, 1.0f);
+		}
 
-        // Compute ideal weight for plane 2
-        float weight2_i = 0.0f;
-        float color0_p2 = color0.lane<0>() * (plane2_component == 0) +
-                         color0.lane<1>() * (plane2_component == 1) +
-                         color0.lane<2>() * (plane2_component == 2) +
-                         color0.lane<3>() * (plane2_component == 3);
-        float color1_p2 = color1.lane<0>() * (plane2_component == 0) +
-                         color1.lane<1>() * (plane2_component == 1) +
-                         color1.lane<2>() * (plane2_component == 2) +
-                         color1.lane<3>() * (plane2_component == 3);
-        float color_p2 = color.lane<0>() * (plane2_component == 0) +
-                        color.lane<1>() * (plane2_component == 1) +
-                        color.lane<2>() * (plane2_component == 2) +
-                        color.lane<3>() * (plane2_component == 3);
+		// Compute ideal weight for plane 2
+		float weight2_i = 0.0f;
+		float color0_p2 = color0.lane<0>() * (plane2_component == 0) + color0.lane<1>() * (plane2_component == 1) + color0.lane<2>() * (plane2_component == 2) + color0.lane<3>() * (plane2_component == 3);
+		float color1_p2 = color1.lane<0>() * (plane2_component == 0) + color1.lane<1>() * (plane2_component == 1) + color1.lane<2>() * (plane2_component == 2) + color1.lane<3>() * (plane2_component == 3);
+		float color_p2 = color.lane<0>() * (plane2_component == 0) + color.lane<1>() * (plane2_component == 1) + color.lane<2>() * (plane2_component == 2) + color.lane<3>() * (plane2_component == 3);
 
-        float diff_p2 = color1_p2 - color0_p2;
-        if (fabsf(diff_p2) > 1e-10f)
-        {
-            weight2_i = (color_p2 - color0_p2) / diff_p2;
-            weight2_i = astc::clamp(weight2_i, 0.0f, 1.0f);
-        }
+		float diff_p2 = color1_p2 - color0_p2;
+		if (fabsf(diff_p2) > 1e-10f)
+		{
+			weight2_i = (color_p2 - color0_p2) / diff_p2;
+			weight2_i = astc::clamp(weight2_i, 0.0f, 1.0f);
+		}
 
-        // For each weight that contributes to this texel
-        for (int j = 0; j < di.texel_weight_count[i]; j++)
-        {
-            int weight_idx = di.texel_weights_tr[j][i];
-            float contrib = di.texel_weight_contribs_float_tr[j][i];
-            float channel_weight = blk.channel_weight.lane<0>();
+		// For each weight that contributes to this texel
+		for (int j = 0; j < di.texel_weight_count[i]; j++)
+		{
+			int weight_idx = di.texel_weights_tr[j][i];
+			float contrib = di.texel_weight_contribs_float_tr[j][i];
+			float channel_weight = blk.channel_weight.lane<0>();
 
-            weight_accum1[weight_idx] += weight1_i * contrib * channel_weight;
-            weight_accum2[weight_idx] += weight2_i * contrib * channel_weight;
-            weight_count[weight_idx] += contrib * channel_weight;
-        }
-    }
+			weight_accum1[weight_idx] += weight1_i * contrib * channel_weight;
+			weight_accum2[weight_idx] += weight2_i * contrib * channel_weight;
+			weight_count[weight_idx] += contrib * channel_weight;
+		}
+	}
 
-    // Compute final weights for both planes
-    for (int i = 0; i < di.weight_count; i++)
-    {
-        float weight_avg1 = weight_count[i] > 0.0f ? 
-            weight_accum1[i] / weight_count[i] : 0.5f;
-        float weight_avg2 = weight_count[i] > 0.0f ? 
-            weight_accum2[i] / weight_count[i] : 0.5f;
+	// Compute final weights for both planes
+	for (int i = 0; i < di.weight_count; i++)
+	{
+		float weight_avg1 = weight_count[i] > 0.0f ? weight_accum1[i] / weight_count[i] : 0.5f;
+		float weight_avg2 = weight_count[i] > 0.0f ? weight_accum2[i] / weight_count[i] : 0.5f;
 
-        weights_plane1[i] = static_cast<uint8_t>(astc::clamp(
-            weight_avg1 * 255.0f + 0.5f,
-            0.0f,
-            255.0f));
-        weights_plane2[i] = static_cast<uint8_t>(astc::clamp(
-            weight_avg2 * 255.0f + 0.5f,
-            0.0f,
-            255.0f));
-    }
+		weights_plane1[i] = static_cast<uint8_t>(astc::clamp(weight_avg1 * 255.0f + 0.5f, 0.0f, 255.0f));
+		weights_plane2[i] = static_cast<uint8_t>(astc::clamp(weight_avg2 * 255.0f + 0.5f, 0.0f, 255.0f));
+	}
 }
 
-static void optimize_weights_for_endpoints(
-    const block_size_descriptor& bsd,
-    const uint8_t* block_ptr,
-    uint8_t* output_block,
-    const uint8_t* original_decoded,
-    int block_width,
-    int block_height,
-    int block_depth,
-    int block_type,
-    const float* gradients,
-    const vfloat4& channel_weights)
+static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, const uint8_t* block_ptr, uint8_t* output_block, const uint8_t* original_decoded, int block_width, int block_height, int block_depth, int block_type, const float* gradients, const vfloat4& channel_weights)
 {
-    symbolic_compressed_block scb;
-    physical_to_symbolic(bsd, block_ptr, scb);
+	symbolic_compressed_block scb;
+	physical_to_symbolic(bsd, block_ptr, scb);
 
-    // Skip if constant color block
-    if (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16)
-    {
-        memcpy(output_block, block_ptr, 16);
-        return;
-    }
+	// Skip if constant color block
+	if (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16)
+	{
+		memcpy(output_block, block_ptr, 16);
+		return;
+	}
 
-    // Create image block from original decoded data
-    image_block blk;
-    blk.texel_count = block_width * block_height * block_depth;
-    for (int i = 0; i < blk.texel_count; i++)
-    {
-        if (block_type == ASTCENC_TYPE_U8)
-        {
-            blk.data_r[i] = original_decoded[i * 4 + 0] / 255.0f;
-            blk.data_g[i] = original_decoded[i * 4 + 1] / 255.0f;
-            blk.data_b[i] = original_decoded[i * 4 + 2] / 255.0f;
-            blk.data_a[i] = original_decoded[i * 4 + 3] / 255.0f;
-        }
-        else
-        {
-            const float* original_decoded_f = reinterpret_cast<const float*>(original_decoded);
-            blk.data_r[i] = original_decoded_f[i * 4 + 0];
-            blk.data_g[i] = original_decoded_f[i * 4 + 1];
-            blk.data_b[i] = original_decoded_f[i * 4 + 2];
-            blk.data_a[i] = original_decoded_f[i * 4 + 3];
-        }
-    }
+	// Create image block from original decoded data
+	image_block blk;
+	blk.texel_count = block_width * block_height * block_depth;
+	for (int i = 0; i < blk.texel_count; i++)
+	{
+		if (block_type == ASTCENC_TYPE_U8)
+		{
+			blk.data_r[i] = original_decoded[i * 4 + 0] / 255.0f;
+			blk.data_g[i] = original_decoded[i * 4 + 1] / 255.0f;
+			blk.data_b[i] = original_decoded[i * 4 + 2] / 255.0f;
+			blk.data_a[i] = original_decoded[i * 4 + 3] / 255.0f;
+		}
+		else
+		{
+			const float* original_decoded_f = reinterpret_cast<const float*>(original_decoded);
+			blk.data_r[i] = original_decoded_f[i * 4 + 0];
+			blk.data_g[i] = original_decoded_f[i * 4 + 1];
+			blk.data_b[i] = original_decoded_f[i * 4 + 2];
+			blk.data_a[i] = original_decoded_f[i * 4 + 3];
+		}
+	}
 
-    blk.xpos = 0;
-    blk.ypos = 0;
-    blk.zpos = 0;
-    blk.data_min = vfloat4::zero();
-    blk.data_max = vfloat4(1.0f);
-    blk.grayscale = false;
-    blk.channel_weight = channel_weights;
+	blk.xpos = 0;
+	blk.ypos = 0;
+	blk.zpos = 0;
+	blk.data_min = vfloat4::zero();
+	blk.data_max = vfloat4(1.0f);
+	blk.grayscale = false;
+	blk.channel_weight = channel_weights;
 
-    // Extract existing endpoints
-    endpoints ep;
-    ep.partition_count = scb.partition_count;
-    for (uint8_t i = 0; i < scb.partition_count; i++)
-    {
-        vint4 color0, color1;
-        bool rgb_hdr, alpha_hdr;
-        astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
-        unpack_color_endpoints(decode_mode, scb.color_formats[i], scb.color_values[i], rgb_hdr, alpha_hdr, color0, color1);
-        ep.endpt0[i] = int_to_float(color0) * (1.0f / 255.0f);
-        ep.endpt1[i] = int_to_float(color1) * (1.0f / 255.0f);
-    }
+	// Extract existing endpoints
+	endpoints ep;
+	ep.partition_count = scb.partition_count;
+	for (uint8_t i = 0; i < scb.partition_count; i++)
+	{
+		vint4 color0, color1;
+		bool rgb_hdr, alpha_hdr;
+		astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
+		unpack_color_endpoints(decode_mode, scb.color_formats[i], scb.color_values[i], rgb_hdr, alpha_hdr, color0, color1);
+		ep.endpt0[i] = int_to_float(color0) * (1.0f / 255.0f);
+		ep.endpt1[i] = int_to_float(color1) * (1.0f / 255.0f);
+	}
 
-    // Get block mode and partition info
-    block_mode mode = bsd.get_block_mode(scb.block_mode);
-    const auto& pi = bsd.get_partition_info(scb.partition_count, scb.partition_index);
-    const auto& di = bsd.get_decimation_info(mode.decimation_mode);
+	// Get block mode and partition info
+	block_mode mode = bsd.get_block_mode(scb.block_mode);
+	const auto& pi = bsd.get_partition_info(scb.partition_count, scb.partition_index);
+	const auto& di = bsd.get_decimation_info(mode.decimation_mode);
 
-    // Recompute optimal weights
-    if (mode.is_dual_plane)
-    {
-        recompute_ideal_weights_2planes(blk, bsd, di, scb.weights, scb.weights + WEIGHTS_PLANE2_OFFSET, ep, scb.plane2_component);
-    }
-    else
-    {
-        recompute_ideal_weights_1plane(blk, pi, di, scb.weights, ep);
-    }
+	// Recompute optimal weights
+	if (mode.is_dual_plane)
+	{
+		recompute_ideal_weights_2planes(blk, bsd, di, scb.weights, scb.weights + WEIGHTS_PLANE2_OFFSET, ep, scb.plane2_component);
+	}
+	else
+	{
+		recompute_ideal_weights_1plane(blk, pi, di, scb.weights, ep);
+	}
 
-    // Pack back to physical block
-    symbolic_to_physical(bsd, scb, output_block);
+	// Pack back to physical block
+	symbolic_to_physical(bsd, scb, output_block);
 }
 
 int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_depth)
@@ -1206,10 +1155,10 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				}
 
 				float mse = get_or_compute_mse(candidate_endpoints);
-				
+
 				// Find the corresponding weight position
 				int weight_pos = mtf_search(&mtf_weights, candidate_endpoints, weights_mask);
-				
+
 				float bit_cost = calculate_bit_cost_2(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
@@ -1267,10 +1216,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					Int128 weights_mask, endpoints_mask;
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
-					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
+					// Try candidate_endpoints as-is first
 					uint8_t temp_block[16];
-					temp_bits.to_bytes(temp_block);
-
+					candidate_endpoints.to_bytes(temp_block);
 					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
 
 					float mse;
@@ -1283,8 +1231,30 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 					}
 
-					float rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					float rd_cost = mse + lambda * calculate_bit_cost_2(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					if (rd_cost < best_rd_cost)
+					{
+						best_match = candidate_endpoints;
+						best_rd_cost = rd_cost;
+					}
 
+					// Then try the candidate_endpoints with candidate weights weights
+
+					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
+					temp_bits.to_bytes(temp_block);
+
+					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
+
+					if (block_type == ASTCENC_TYPE_U8)
+					{
+						mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+					}
+					else
+					{
+						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+					}
+
+					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
@@ -1311,7 +1281,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					}
 
 					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
-
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
