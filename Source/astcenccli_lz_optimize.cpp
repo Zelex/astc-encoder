@@ -181,10 +181,10 @@ public:
 	}
 };
 
-// #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
-#define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
+#define MAX_MTF_SIZE (256 + 64 + 16 + 1)
+//#define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
-#define BEST_CANDIDATES_COUNT (16)
+#define BEST_CANDIDATES_COUNT (8)
 #define MAX_THREADS (128)
 #define MODE_MASK (0x7FF)
 
@@ -1716,7 +1716,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	float lambda_0 = 0.0f;
 	float lambda_5 = 0.175f;
 	float lambda_10 = 0.275f;
-	float lambda_40 = 0.75f;
+	float lambda_40 = 0.8f;
 
 	if (lambda <= 0.0f)
 	{
