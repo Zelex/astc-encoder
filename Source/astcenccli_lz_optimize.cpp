@@ -694,8 +694,8 @@ static void optimize_weights_for_endpoints(const block_size_descriptor& bsd, con
 		bool rgb_hdr, alpha_hdr;
 		astcenc_profile decode_mode = (block_type == ASTCENC_TYPE_U8) ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
 		unpack_color_endpoints(decode_mode, scb.color_formats[i], scb.color_values[i], rgb_hdr, alpha_hdr, color0, color1);
-		ep.endpt0[i] = int_to_float(color0) * (1.0f / 255.0f);
-		ep.endpt1[i] = int_to_float(color1) * (1.0f / 255.0f);
+		ep.endpt0[i] = int_to_float(color0) * (1.0f / 65535.0f);
+		ep.endpt1[i] = int_to_float(color1) * (1.0f / 65535.0f);
 	}
 
 	// Get block mode and partition info
@@ -1142,6 +1142,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				Int128 weights_mask, endpoints_mask;
 				calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
+				if (1)
 				{
 					uint8_t temp_block[16];
 					optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
@@ -1528,10 +1529,10 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 		float diff_a = (float)input[i * 4 + 3] - (float)blurred[i * 4 + 3];
 
 		float diff_sum = 0;
-		diff_sum += diff_r * diff_r * channel_weights.lane<0>();
-		diff_sum += diff_g * diff_g * channel_weights.lane<1>();
-		diff_sum += diff_b * diff_b * channel_weights.lane<2>();
-		diff_sum += diff_a * diff_a * channel_weights.lane<3>();
+		diff_sum += diff_r * diff_r; // * channel_weights.lane<0>();
+		diff_sum += diff_g * diff_g; // * channel_weights.lane<1>();
+		diff_sum += diff_b * diff_b; // * channel_weights.lane<2>();
+		diff_sum += diff_a * diff_a; // * channel_weights.lane<3>();
 		squared_diff[i] = diff_sum;
 	}
 
@@ -1541,7 +1542,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	// Map x |-> C1/(C2 + sqrt(x))
 	float C1 = 256.0f;
 	float C2 = 1.0f;
-	float activity_scalar = 3.0f * 2;
+	float activity_scalar = 3.0f;
 	for (size_t i = 0; i < pixel_count; i++)
 	{
 		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
