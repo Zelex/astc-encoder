@@ -548,6 +548,13 @@ static void recompute_ideal_weights_1plane(const image_block& blk, const partiti
 		if (len2 > 1e-10f)
 		{
 			weight_i = dot_s(color - color0, color_diff * blk.channel_weight) / len2;
+
+			// Apply the same weight adjustment as the core encoder
+			if (weight_i > 0.5f)
+			{
+				weight_i = (weight_i - 0.5f) * 1.2f + 0.5f;
+			}
+
 			weight_i = astc::clamp(weight_i, 0.0f, 1.0f);
 		}
 
@@ -556,8 +563,11 @@ static void recompute_ideal_weights_1plane(const image_block& blk, const partiti
 		{
 			int weight_idx = di.texel_weights_tr[j][i];
 			float contrib = di.texel_weight_contribs_float_tr[j][weight_idx];
-			weight_accum[weight_idx] += weight_i * contrib;
-			weight_contrib_sum[weight_idx] += contrib;
+
+			// Apply channel weighting to match core encoder
+			float channel_scale = hadd_s(blk.channel_weight) * 0.25f;
+			weight_accum[weight_idx] += weight_i * contrib * channel_scale;
+			weight_contrib_sum[weight_idx] += contrib * channel_scale;
 		}
 	}
 
@@ -565,6 +575,12 @@ static void recompute_ideal_weights_1plane(const image_block& blk, const partiti
 	for (int i = 0; i < di.weight_count; i++)
 	{
 		float weight_avg = weight_accum[i] / weight_contrib_sum[i];
+
+		if (weight_avg > 0.5f)
+		{
+			weight_avg = 0.5f + (weight_avg - 0.5f) * 1.2f;
+		}
+
 		weights[i] = static_cast<uint8_t>(astc::clamp(weight_avg * 64.0f + 0.5f, 0.0f, 64.0f));
 	}
 }
@@ -602,6 +618,10 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 		if (len2_1 > 1e-10f)
 		{
 			weight1_i = dot_s((color - color0) * plane1_mask, color_diff1 * blk.channel_weight) / len2_1;
+			if (weight1_i > 0.5f)
+			{
+				weight1_i = (weight1_i - 0.5f) * 1.2f + 0.5f;
+			}
 			weight1_i = astc::clamp(weight1_i, 0.0f, 1.0f);
 		}
 
@@ -615,6 +635,10 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 		if (fabsf(diff_p2) > 1e-10f)
 		{
 			weight2_i = (color_p2 - color0_p2) / diff_p2;
+			if (weight2_i > 0.5f)
+			{
+				weight2_i = (weight2_i - 0.5f) * 1.2f + 0.5f;
+			}
 			weight2_i = astc::clamp(weight2_i, 0.0f, 1.0f);
 		}
 
@@ -624,9 +648,10 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 			int weight_idx = di.texel_weights_tr[j][i];
 			float contrib = di.texel_weight_contribs_float_tr[j][weight_idx];
 
-			weight_accum1[weight_idx] += weight1_i * contrib;
-			weight_accum2[weight_idx] += weight2_i * contrib;
-			weight_contrib_sum[weight_idx] += contrib;
+			float channel_scale = hadd_s(blk.channel_weight) * 0.25f;
+			weight_accum1[weight_idx] += weight1_i * contrib * channel_scale;
+			weight_accum2[weight_idx] += weight2_i * contrib * channel_scale;
+			weight_contrib_sum[weight_idx] += contrib * channel_scale;
 		}
 	}
 
@@ -635,6 +660,15 @@ static void recompute_ideal_weights_2planes(const image_block& blk, const block_
 	{
 		float weight_avg1 = weight_accum1[i] / weight_contrib_sum[i];
 		float weight_avg2 = weight_accum2[i] / weight_contrib_sum[i];
+
+		if (weight_avg1 > 0.5f)
+		{
+			weight_avg1 = 0.5f + (weight_avg1 - 0.5f) * 1.2f;
+		}
+		if (weight_avg2 > 0.5f)
+		{
+			weight_avg2 = 0.5f + (weight_avg2 - 0.5f) * 1.2f;
+		}
 
 		weights_plane1[i] = static_cast<uint8_t>(astc::clamp(weight_avg1 * 64.0f + 0.5f, 0.0f, 64.0f));
 		weights_plane2[i] = static_cast<uint8_t>(astc::clamp(weight_avg2 * 64.0f + 0.5f, 0.0f, 64.0f));
@@ -1157,6 +1191,20 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 				// Insert into best_endpoints if it's one of the best candidates
 				add_candidate(best_endpoints, endpoints_count, candidate_endpoints, rd_cost, k);
+
+				#if 0 // Worse results... TODO/Fixme
+				{
+					uint8_t temp_block[16];
+					optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
+
+					float mse = get_or_compute_mse(Int128(temp_block));
+					int weight_pos = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
+					float bit_cost = calculate_bit_cost_2(weight_pos, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					float rd_cost = mse + lambda * bit_cost;
+
+					add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost, k);
+				}
+				#endif
 			}
 
 			// Find best weight candidates
