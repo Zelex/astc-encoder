@@ -1059,10 +1059,18 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		// Helper function to propagate errors
 		auto propagate_error = [&](long long x, long long y, long long z, float mse_diff, float rate_diff, bool is_forward)
 		{
+			// Calculate the work group boundary
+			long long current_block_idx = z * blocks_x * blocks_y + y * blocks_x + x;
+			long long work_group_start = (current_block_idx / max_blocks_per_item) * max_blocks_per_item;
+			long long work_group_end = astc::min(work_group_start + max_blocks_per_item, (long long)num_blocks);
+
+			// Don't propagate if target block would be outside current work group
 			if (x < 0 || x >= blocks_x || y < 0 || y >= blocks_y || z < 0 || z >= blocks_z)
 				return;
 
 			long long block_idx = z * blocks_x * blocks_y + y * blocks_x + x;
+			if (block_idx < work_group_start || block_idx >= work_group_end)
+				return;
 
 			// Error filter coefficients (similar to Floyd-Steinberg)
 			const float error_weights[4] = {7.0f / 16.0f, 3.0f / 16.0f, 5.0f / 16.0f, 1.0f / 16.0f};
@@ -1073,17 +1081,17 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				error_buffer[block_idx].mse_error += mse_diff * error_weights[0];
 				error_buffer[block_idx].rate_error += rate_diff * error_weights[0];
 
-				if (x + 1 < blocks_x)
+				if (x + 1 < blocks_x && block_idx + 1 < work_group_end)
 				{
 					error_buffer[block_idx + 1].mse_error += mse_diff * error_weights[1];
 					error_buffer[block_idx + 1].rate_error += rate_diff * error_weights[1];
 				}
-				if (y + 1 < blocks_y)
+				if (y + 1 < blocks_y && block_idx + blocks_x < work_group_end)
 				{
 					error_buffer[block_idx + blocks_x].mse_error += mse_diff * error_weights[2];
 					error_buffer[block_idx + blocks_x].rate_error += rate_diff * error_weights[2];
 				}
-				if (x + 1 < blocks_x && y + 1 < blocks_y)
+				if (x + 1 < blocks_x && y + 1 < blocks_y && block_idx + blocks_x + 1 < work_group_end)
 				{
 					error_buffer[block_idx + blocks_x + 1].mse_error += mse_diff * error_weights[3];
 					error_buffer[block_idx + blocks_x + 1].rate_error += rate_diff * error_weights[3];
@@ -1095,17 +1103,17 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				error_buffer[block_idx].mse_error += mse_diff * error_weights[0];
 				error_buffer[block_idx].rate_error += rate_diff * error_weights[0];
 
-				if (x > 0)
+				if (x > 0 && block_idx - 1 >= work_group_start)
 				{
 					error_buffer[block_idx - 1].mse_error += mse_diff * error_weights[1];
 					error_buffer[block_idx - 1].rate_error += rate_diff * error_weights[1];
 				}
-				if (y > 0)
+				if (y > 0 && block_idx - blocks_x >= work_group_start)
 				{
 					error_buffer[block_idx - blocks_x].mse_error += mse_diff * error_weights[2];
 					error_buffer[block_idx - blocks_x].rate_error += rate_diff * error_weights[2];
 				}
-				if (x > 0 && y > 0)
+				if (x > 0 && y > 0 && block_idx - blocks_x - 1 >= work_group_start)
 				{
 					error_buffer[block_idx - blocks_x - 1].mse_error += mse_diff * error_weights[3];
 					error_buffer[block_idx - blocks_x - 1].rate_error += rate_diff * error_weights[3];
