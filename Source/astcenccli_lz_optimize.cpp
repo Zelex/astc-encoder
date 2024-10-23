@@ -306,14 +306,6 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 	return pos;
 }
 
-static float calculate_bit_cost(int mtf_value, const Int128& literal_value, Mtf* mtf, const Int128& mask, Histo* histogram)
-{
-	Int128 masked_literal = literal_value.bitwise_and(mask);
-	if (mtf_value == -1)
-		return histo_cost(histogram, masked_literal, mask);
-	return log2_fast(mtf_value + 1.f);
-}
-
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
 {
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
