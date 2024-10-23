@@ -1007,12 +1007,24 @@ static inline BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, c
 	return result;
 }
 
+// Add this structure near the top of the file
+struct RDError {
+    float mse_error;
+    float rate_error;
+};
+
 static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights)
 {
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
 	const int max_blocks_per_item = 8192;
 	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
+
+	// Allocate error diffusion buffers - one per thread
+	RDError** error_buffers = (RDError**)malloc(num_threads * sizeof(RDError*));
+	for (int i = 0; i < num_threads; i++) {
+		error_buffers[i] = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
+	}
 
 	// Initialize weight bits table
 	uint8_t* weight_bits_tbl = (uint8_t*)malloc(2048);
@@ -1029,7 +1041,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	std::condition_variable cv;
 	bool all_work_done = false;
 
-	auto thread_function = [&]()
+	auto thread_function = [&](int thread_id)
 	{
 		uint8_t modified_decoded[6 * 6 * 6 * 4 * 4];
 		CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
@@ -1041,9 +1053,62 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
 		histo_reset(&histogram);
 
-		// Helper function to process a single block
-		auto process_block = [&](size_t block_index, bool is_forward)
-		{
+		RDError* error_buffer = error_buffers[thread_id];
+
+		// Helper function to propagate errors
+		auto propagate_error = [&](long long x, long long y, long long z, float mse_diff, float rate_diff, bool is_forward) {
+			if (x < 0 || x >= blocks_x || y < 0 || y >= blocks_y || z < 0 || z >= blocks_z)
+				return;
+
+			long long block_idx = z * blocks_x * blocks_y + y * blocks_x + x;
+			
+			// Error filter coefficients (similar to Floyd-Steinberg)
+			const float error_weights[4] = { 7.0f/16.0f, 3.0f/16.0f, 5.0f/16.0f, 1.0f/16.0f };
+			
+			if (is_forward) {
+				// Forward pass error diffusion pattern
+				error_buffer[block_idx].mse_error += mse_diff * error_weights[0];
+				error_buffer[block_idx].rate_error += rate_diff * error_weights[0];
+				
+				if (x + 1 < blocks_x) {
+					error_buffer[block_idx + 1].mse_error += mse_diff * error_weights[1];
+					error_buffer[block_idx + 1].rate_error += rate_diff * error_weights[1];
+				}
+				if (y + 1 < blocks_y) {
+					error_buffer[block_idx + blocks_x].mse_error += mse_diff * error_weights[2];
+					error_buffer[block_idx + blocks_x].rate_error += rate_diff * error_weights[2];
+				}
+				if (x + 1 < blocks_x && y + 1 < blocks_y) {
+					error_buffer[block_idx + blocks_x + 1].mse_error += mse_diff * error_weights[3];
+					error_buffer[block_idx + blocks_x + 1].rate_error += rate_diff * error_weights[3];
+				}
+			} else {
+				// Backward pass error diffusion pattern
+				error_buffer[block_idx].mse_error += mse_diff * error_weights[0];
+				error_buffer[block_idx].rate_error += rate_diff * error_weights[0];
+				
+				if (x > 0) {
+					error_buffer[block_idx - 1].mse_error += mse_diff * error_weights[1];
+					error_buffer[block_idx - 1].rate_error += rate_diff * error_weights[1];
+				}
+				if (y > 0) {
+					error_buffer[block_idx - blocks_x].mse_error += mse_diff * error_weights[2];
+					error_buffer[block_idx - blocks_x].rate_error += rate_diff * error_weights[2];
+				}
+				if (x > 0 && y > 0) {
+					error_buffer[block_idx - blocks_x - 1].mse_error += mse_diff * error_weights[3];
+					error_buffer[block_idx - blocks_x - 1].rate_error += rate_diff * error_weights[3];
+				}
+			}
+		};
+
+		// Modify the process_block function to include error diffusion
+		auto process_block = [&](size_t block_index, bool is_forward) {
+			size_t z = block_index / (blocks_x * blocks_y);
+			size_t rem = block_index % (blocks_x * blocks_y);
+			size_t y = rem / blocks_x;
+			size_t x = rem % blocks_x;
+
 			uint8_t* current_block = data + block_index * block_size;
 			BitsAndWeightBits current = get_bits_and_weight_bits(current_block, weight_bits_tbl);
 			Int128 current_bits = current.bits;
@@ -1107,7 +1172,16 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
 			int mtf_endpoints_pos = mtf_search(&mtf_endpoints, current_bits, endpoints_mask);
-			float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+			//float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+
+			// Before computing best_rd_cost, get the propagated error
+			RDError propagated = error_buffer[block_index];
+			float adjusted_mse = original_mse + propagated.mse_error;
+			float adjusted_rate = calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, 
+				current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+			adjusted_rate += propagated.rate_error;
+			
+			float best_rd_cost = adjusted_mse + lambda * adjusted_rate;
 
 			struct Candidate
 			{
@@ -1342,6 +1416,17 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			histo_update(&histogram, best_match, Int128::from_int(0).bitwise_not());
 			mtf_encode(&mtf_weights, best_match, best_weights_mask);
 			mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
+
+			// After finding the best match, propagate the error
+			float final_mse = get_or_compute_mse(best_match);
+			float final_rate = calculate_bit_cost_2(mtf_search(&mtf_weights, best_match, best_weights_mask),
+				mtf_search(&mtf_endpoints, best_match, best_endpoints_mask),
+				best_match, &mtf_weights, &mtf_endpoints, best_weights_mask, best_endpoints_mask, &histogram);
+				
+			float mse_diff = final_mse - adjusted_mse;
+			float rate_diff = final_rate - adjusted_rate;
+			
+			propagate_error(x, y, z, mse_diff, rate_diff, is_forward);
 		};
 
 		while (true)
@@ -1390,7 +1475,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 		// Start threads
 		for (int i = 0; i < num_threads; ++i)
-			threads.emplace_back(thread_function);
+			threads.emplace_back(thread_function, i);
 
 		// Wait for all threads to finish
 		{
@@ -1412,6 +1497,12 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 	// Run forward pass
 	run_pass(true);
+
+	// Clean up error buffers
+	for (int i = 0; i < num_threads; i++) {
+		free(error_buffers[i]);
+	}
+	free(error_buffers);
 
 	free(weight_bits_tbl);
 }
