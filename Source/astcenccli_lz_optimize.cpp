@@ -183,7 +183,7 @@ public:
 
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
 // #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
-#define CACHE_SIZE (8192) // Should be a power of 2 for efficient modulo operation
+#define CACHE_SIZE (0x10000) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
 #define MODE_MASK (0x7FF)
@@ -224,11 +224,35 @@ static inline float log2_fast(float val)
 
 static uint32_t hash_128(const Int128& value)
 {
-	uint32_t hash = 0;
-	for (int i = 0; i < 4; i++)
+	// FNV-1a inspired constants
+	const uint32_t PRIME = 0x01000193;
+	const uint32_t SEED = 0x811C9DC5;
+
+	uint32_t hash = SEED;
+
+	// Process 4 bytes at a time with better mixing
+	for (int i = 0; i < 16; i += 4)
 	{
-		hash ^= value.get_byte(i * 4) | (value.get_byte(i * 4 + 1) << 8) | (value.get_byte(i * 4 + 2) << 16) | (value.get_byte(i * 4 + 3) << 24);
+		uint32_t chunk = value.get_byte(i) | (value.get_byte(i + 1) << 8) | (value.get_byte(i + 2) << 16) | (value.get_byte(i + 3) << 24);
+
+		// Mix the chunk
+		chunk *= 0xcc9e2d51;
+		chunk = (chunk << 15) | (chunk >> 17);
+		chunk *= 0x1b873593;
+
+		// Mix it into the hash
+		hash ^= chunk;
+		hash = (hash << 13) | (hash >> 19);
+		hash = hash * 5 + 0xe6546b64;
 	}
+
+	// Final avalanche mix
+	hash ^= hash >> 16;
+	hash *= 0x85ebca6b;
+	hash ^= hash >> 13;
+	hash *= 0xc2b2ae35;
+	hash ^= hash >> 16;
+
 	return hash;
 }
 
@@ -1143,11 +1167,12 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					{
 						return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 					}
-					else
-					{
-						return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
+					return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 				}
+				// else if (block_cache[hash].valid)
+				//{
+				// printf("Collision %s %x\n", candidate_bits.to_string().c_str(), hash);
+				//}
 
 				// If not in cache, compute and cache the result
 				uint8_t temp_block[16];
@@ -1162,10 +1187,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				{
 					return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 				}
-				else
-				{
-					return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-				}
+				return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
 			};
 
 			// Decode the original block to compute initial MSE
