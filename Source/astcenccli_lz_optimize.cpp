@@ -182,8 +182,8 @@ public:
 };
 
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
-//#define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
-#define CACHE_SIZE (4096) // Should be a power of 2 for efficient modulo operation
+// #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
+#define CACHE_SIZE (8192) // Should be a power of 2 for efficient modulo operation
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
 #define MODE_MASK (0x7FF)
@@ -1044,7 +1044,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 	auto thread_function = [&](int thread_id)
 	{
-		uint8_t modified_decoded[6 * 6 * 6 * 4 * 4];
 		CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
 		Mtf mtf_weights;
 		Mtf mtf_endpoints;
@@ -1178,16 +1177,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			};
 
 			// Decode the original block to compute initial MSE
-			astc_decompress_block(*bsd, current_block, modified_decoded, block_width, block_height, block_depth, block_type);
-			float original_mse;
-			if (block_type == ASTCENC_TYPE_U8)
-			{
-				original_mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-			}
-			else
-			{
-				original_mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-			}
+			float original_mse = get_or_compute_mse(current_bits);
 
 			int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
 			int mtf_endpoints_pos = mtf_search(&mtf_endpoints, current_bits, endpoints_mask);
@@ -1316,20 +1306,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					if (weights_weight_bits == endpoint_weight_bits)
 					{
 						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
-						uint8_t temp_block[16];
-						combined_bits.to_bytes(temp_block);
-						astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-						float mse;
-						if (block_type == ASTCENC_TYPE_U8)
-						{
-							mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-						}
-						else
-						{
-							mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-						}
-
+						float mse = get_or_compute_mse(combined_bits);
 						float bit_cost = calculate_bit_cost_2(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 						float rd_cost = mse + lambda * bit_cost;
 
@@ -1350,20 +1327,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
 					// Try candidate_endpoints as-is first
-					uint8_t temp_block[16];
-					candidate_endpoints.to_bytes(temp_block);
-					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-					float mse;
-					if (block_type == ASTCENC_TYPE_U8)
-					{
-						mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-					else
-					{
-						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-
+					float mse = get_or_compute_mse(candidate_endpoints);
 					float rd_cost = mse + lambda * calculate_bit_cost_2(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
@@ -1374,19 +1338,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					// Then try the candidate_endpoints with candidate weights weights
 
 					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
-					temp_bits.to_bytes(temp_block);
-
-					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-					if (block_type == ASTCENC_TYPE_U8)
-					{
-						mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-					else
-					{
-						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-
+					mse = get_or_compute_mse(temp_bits);
 					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
@@ -1400,19 +1352,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
 					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
-					temp_bits.to_bytes(temp_block);
-
-					astc_decompress_block(*bsd, temp_block, modified_decoded, block_width, block_height, block_depth, block_type);
-
-					if (block_type == ASTCENC_TYPE_U8)
-					{
-						mse = calculate_ssd_weighted(original_decoded, modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-					else
-					{
-						mse = calculate_mrsse_weighted((float*)original_decoded, (float*)modified_decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
-					}
-
+					mse = get_or_compute_mse(temp_bits);
 					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
