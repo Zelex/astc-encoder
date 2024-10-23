@@ -1007,7 +1007,6 @@ static inline BitsAndWeightBits get_bits_and_weight_bits(const uint8_t* block, c
 	return result;
 }
 
-// Add this structure near the top of the file
 struct RDError {
     float mse_error;
     float rate_error;
