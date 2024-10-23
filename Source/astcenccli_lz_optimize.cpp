@@ -1113,7 +1113,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			}
 		};
 
-		// Modify the process_block function to include error diffusion
 		auto process_block = [&](size_t block_index, bool is_forward)
 		{
 			size_t z = block_index / (blocks_x * blocks_y);
