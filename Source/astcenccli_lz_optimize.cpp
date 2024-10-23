@@ -352,40 +352,13 @@ static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int t
 {
 	vfloat4 sum = vfloat4::zero();
 
-	if (std::is_same_v<T1, float> && std::is_same_v<T2, float>)
+	for (int i = 0; i < total; i += 4)
 	{
-		for (int i = 0; i < total; i += 4)
-		{
-			float weight = weights[i >> 2];
-			vfloat4 v1 = vfloat4((float*)img1 + i);
-			vfloat4 v2 = vfloat4((float*)img2 + i);
-			vfloat4 diff = v1 - v2;
-			sum += diff * diff * weight;
-		}
-	}
-	else if (std::is_same_v<T1, uint8_t> && std::is_same_v<T2, uint8_t>)
-	{
-		for (int i = 0; i < total; i += 4)
-		{
-			float weight = weights[i >> 2];
-			vint4 i1(img1 + i);
-			vint4 i2(img2 + i);
-			vfloat4 v1 = int_to_float(i1);
-			vfloat4 v2 = int_to_float(i2);
-			vfloat4 diff = v1 - v2;
-			sum += diff * diff * weight;
-		}
-	}
-	else
-	{
-		for (int i = 0; i < total; i += 4)
-		{
-			float weight = weights[i >> 2];
-			vfloat4 v1((float)img1[i], (float)img1[i + 1], (float)img1[i + 2], (float)img1[i + 3]);
-			vfloat4 v2((float)img2[i], (float)img2[i + 1], (float)img2[i + 2], (float)img2[i + 3]);
-			vfloat4 diff = v1 - v2;
-			sum += diff * diff * weight;
-		}
+		float weight = weights[i >> 2];
+		vfloat4 v1((float)img1[i], (float)img1[i + 1], (float)img1[i + 2], (float)img1[i + 3]);
+		vfloat4 v2((float)img2[i], (float)img2[i + 1], (float)img2[i + 2], (float)img2[i + 3]);
+		vfloat4 diff = v1 - v2;
+		sum += diff * diff * weight;
 	}
 
 	return dot_s(sum, channel_weights);
