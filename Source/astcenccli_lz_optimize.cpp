@@ -312,41 +312,45 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
 {
-	// Constants for modeling ZIP compression characteristics
-	const float MATCH_OVERHEAD = 3.0f;   // Bytes needed to encode match length/distance
-	const float LITERAL_OVERHEAD = 0.1f; // Small overhead for literal runs
-	const float MTF_DISCOUNT = 0.85f;    // Discount factor for recently used values
-	const float REPEAT_DISCOUNT = 0.7f;  // Additional discount for repeated matches
-	const int MAX_MATCH_BENEFIT = 16;    // Maximum benefit from a single match
+	// Constants for modeling LZMA compression characteristics
+	const float LITERAL_CONTEXT_BITS = 0.5f; // Cost for literal context modeling
+	const float MATCH_LEN_BITS = 2.0f;       // Base bits for match length encoding
+	const float MATCH_DIST_BITS = 2.5f;      // Base bits for match distance encoding
+	const float RECENT_DIST_DISCOUNT = 0.5f; // Discount for recently used distances
+	const float ALIGN_BITS_COST = 0.5f;      // Cost for match position alignment bits
+	const int NUM_REP_DISTS = 4;             // Number of recent distances to track
+	const float REP_MATCH_DISCOUNT = 0.3f;   // Additional discount for repeated matches
+	const float LONG_REP_DISCOUNT = 0.4f;    // Extra discount for long repeated matches
 
 	float cost = 0.0f;
 
 	// Handle literal encoding when no MTF matches found
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
-		// Use histogram-based cost for literal bytes
-		cost = histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
-
-		// Add literal overhead
+		// Use histogram-based cost for literal bytes with context modeling
+		float literal_cost = histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
 		int literal_bytes = 0;
+		uint8_t prev_byte = 0;
+
 		for (int i = 0; i < 16; i++)
 		{
 			if (mask_1.get_byte(i) || mask_2.get_byte(i))
 			{
 				literal_bytes++;
+				// Add context modeling cost based on previous byte
+				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
+				prev_byte = literal_value.get_byte(i);
 			}
 		}
-		cost += LITERAL_OVERHEAD * literal_bytes;
+
+		cost += literal_cost;
 		return cost;
 	}
 
 	// Calculate costs for matched portions
 	if (mtf_value_1 != -1)
 	{
-		// Base cost for match encoding
-		float match_cost = MATCH_OVERHEAD;
-
-		// Calculate match length (number of bytes matched)
+		// Calculate match length
 		int match_length = 0;
 		for (int i = 0; i < 16; i++)
 		{
@@ -354,49 +358,54 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 				match_length++;
 		}
 
-		// Adjust cost based on match position and length
-		float position_cost = log2_fast(mtf_value_1 + 1.0f);
-
-		// Apply MTF discount for recent matches
-		if (mtf_value_1 < 4)
+		// Base match length cost (varies with length)
+		float len_cost = MATCH_LEN_BITS;
+		if (match_length > 8)
 		{
-			position_cost *= MTF_DISCOUNT;
+			len_cost += log2_fast(match_length - 7.f);
 		}
 
-		// Check for repeated matches, but only compare masked portions
-		bool is_repeat = false;
+		// Match distance cost
+		float dist_cost = MATCH_DIST_BITS;
+		if (mtf_value_1 >= NUM_REP_DISTS)
+		{
+			// Normal match distance encoding
+			dist_cost += log2_fast(mtf_value_1 + 1.f);
+			// Add alignment bits cost
+			dist_cost += ALIGN_BITS_COST;
+		}
+		else
+		{
+			// Recent distance match (cheaper to encode)
+			dist_cost *= RECENT_DIST_DISCOUNT;
+		}
+
+		// Check for repeated matches with proper masking
+		bool is_rep_match = false;
 		if (mtf_value_1 > 0 && mtf_1->size > 0)
 		{
 			Int128 current_masked = literal_value.bitwise_and(mask_1);
 			Int128 prev_masked = mtf_1->list[mtf_value_1 - 1].bitwise_and(mask_1);
-			is_repeat = current_masked.is_equal(prev_masked);
-			if (is_repeat)
+			is_rep_match = current_masked.is_equal(prev_masked);
+
+			if (is_rep_match)
 			{
-				position_cost *= REPEAT_DISCOUNT;
+				// Apply repeat match discount
+				dist_cost *= REP_MATCH_DISCOUNT;
+				// Additional discount for long repeated matches
+				if (match_length > 4)
+				{
+					dist_cost *= LONG_REP_DISCOUNT;
+				}
 			}
 		}
 
-		// Cap the benefit from long matches
-		float match_benefit = astc::min(match_length, MAX_MATCH_BENEFIT);
-		cost += match_cost + position_cost - match_benefit;
+		cost += len_cost + dist_cost;
 	}
 
-	// Handle remaining literal portion if only partial match
-	if (mtf_value_2 == -1)
+	// Handle second match portion similarly
+	if (mtf_value_2 != -1)
 	{
-		float literal_cost = histo_cost(histogram, literal_value, mask_2);
-		int literal_bytes = 0;
-		for (int i = 0; i < 16; i++)
-		{
-			if (mask_2.get_byte(i))
-				literal_bytes++;
-		}
-		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
-	}
-	else
-	{
-		// Handle second match similarly to first match
-		float match_cost = MATCH_OVERHEAD;
 		int match_length = 0;
 		for (int i = 0; i < 16; i++)
 		{
@@ -404,27 +413,57 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 				match_length++;
 		}
 
-		float position_cost = log2_fast(mtf_value_2 + 1.0f);
-		if (mtf_value_2 < 4)
+		float len_cost = MATCH_LEN_BITS;
+		if (match_length > 8)
 		{
-			position_cost *= MTF_DISCOUNT;
+			len_cost += log2_fast(match_length - 7.f);
+		}
+
+		float dist_cost = MATCH_DIST_BITS;
+		if (mtf_value_2 >= NUM_REP_DISTS)
+		{
+			dist_cost += log2_fast(mtf_value_2 + 1.f);
+			dist_cost += ALIGN_BITS_COST;
+		}
+		else
+		{
+			dist_cost *= RECENT_DIST_DISCOUNT;
 		}
 
 		// Check for repeated matches with mask for second portion
-		bool is_repeat = false;
+		bool is_rep_match = false;
 		if (mtf_value_2 > 0 && mtf_2->size > 0)
 		{
 			Int128 current_masked = literal_value.bitwise_and(mask_2);
 			Int128 prev_masked = mtf_2->list[mtf_value_2 - 1].bitwise_and(mask_2);
-			is_repeat = current_masked.is_equal(prev_masked);
-			if (is_repeat)
+			is_rep_match = current_masked.is_equal(prev_masked);
+
+			if (is_rep_match)
 			{
-				position_cost *= REPEAT_DISCOUNT;
+				dist_cost *= REP_MATCH_DISCOUNT;
+				if (match_length > 4)
+				{
+					dist_cost *= LONG_REP_DISCOUNT;
+				}
 			}
 		}
 
-		float match_benefit = astc::min(match_length, MAX_MATCH_BENEFIT);
-		cost += match_cost + position_cost - match_benefit;
+		cost += len_cost + dist_cost;
+	}
+	else
+	{
+		// Handle remaining literals
+		float literal_cost = histo_cost(histogram, literal_value, mask_2);
+		uint8_t prev_byte = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_2.get_byte(i))
+			{
+				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
+				prev_byte = literal_value.get_byte(i);
+			}
+		}
+		cost += literal_cost;
 	}
 
 	return cost;
