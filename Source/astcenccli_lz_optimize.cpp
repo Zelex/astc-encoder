@@ -1902,9 +1902,9 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 
 	// Map lambda from [10, 40] to ...
 	float lambda_0 = 0.0f;
-	float lambda_5 = 0.175f;
-	float lambda_10 = 0.3f;
-	float lambda_40 = 0.9f;
+	float lambda_5 = 0.125f;
+	float lambda_10 = 0.225f;
+	float lambda_40 = 0.7f;
 
 	if (lambda <= 0.0f)
 	{
