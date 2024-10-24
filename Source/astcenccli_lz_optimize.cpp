@@ -259,10 +259,36 @@ static void mtf_init(Mtf* mtf, int max_size)
 
 static int mtf_search(Mtf* mtf, const Int128& value, const Int128& mask)
 {
+	// Pre-compute the masked value once
 	Int128 masked_value = value.bitwise_and(mask);
-	for (int i = 0; i < mtf->size; i++)
+
+	int i = 0;
+	for (; i + 3 < mtf->size; i += 4)
+	{
+		// Check if any of these 4 entries match
+		bool match0 = mtf->list[i + 0].bitwise_and(mask).is_equal(masked_value);
+		bool match1 = mtf->list[i + 1].bitwise_and(mask).is_equal(masked_value);
+		bool match2 = mtf->list[i + 2].bitwise_and(mask).is_equal(masked_value);
+		bool match3 = mtf->list[i + 3].bitwise_and(mask).is_equal(masked_value);
+
+		// Return the first matching position
+		if (match0)
+			return i;
+		if (match1)
+			return i + 1;
+		if (match2)
+			return i + 2;
+		if (match3)
+			return i + 3;
+	}
+
+	// Handle remaining entries
+	for (; i < mtf->size; i++)
+	{
 		if (mtf->list[i].bitwise_and(mask).is_equal(masked_value))
 			return i;
+	}
+
 	return -1;
 }
 
