@@ -407,6 +407,20 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 	}
 
 	// Calculate costs for matched portions
+	/*
+	if (mtf_value_1 == -1)
+	{
+		float literal_cost = histo_cost(histogram, literal_value, mask_1);
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i))
+				literal_bytes++;
+		}
+		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
+	}
+	else
+	*/
 	if (mtf_value_1 != -1)
 	{
 		// Base cost for match encoding
@@ -1905,7 +1919,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	float lambda_0 = 0.0f;
 	float lambda_5 = 0.125f;
 	float lambda_10 = 0.225f;
-	float lambda_40 = 0.7f;
+	float lambda_40 = 0.725f;
 	if (MEASURE_RATE == calculate_bit_cost_lzma)
 	{
 		lambda_0 = 0.0f;
