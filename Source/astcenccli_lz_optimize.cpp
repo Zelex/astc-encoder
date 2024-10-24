@@ -325,27 +325,33 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 
 	float cost = 0.0f;
 
-	// Handle literal encoding when no MTF matches found
-	if (mtf_value_1 == -1 && mtf_value_2 == -1)
+	// Create a mask for bytes that will be encoded as literals
+	Int128 literal_mask = Int128::from_int(0);
+	if (mtf_value_1 == -1)
 	{
-		// Use histogram-based cost for literal bytes with context modeling
-		float literal_cost = histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
-		int literal_bytes = 0;
+		literal_mask = literal_mask.bitwise_or(mask_1);
+	}
+	if (mtf_value_2 == -1)
+	{
+		literal_mask = literal_mask.bitwise_or(mask_2);
+	}
+
+	// Only calculate literal costs for bytes that aren't part of matches
+	if (!literal_mask.is_equal(Int128::from_int(0)))
+	{
+		float literal_cost = histo_cost(histogram, literal_value, literal_mask);
 		uint8_t prev_byte = 0;
 
 		for (int i = 0; i < 16; i++)
 		{
-			if (mask_1.get_byte(i) || mask_2.get_byte(i))
+			if (literal_mask.get_byte(i))
 			{
-				literal_bytes++;
-				// Add context modeling cost based on previous byte
 				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
 				prev_byte = literal_value.get_byte(i);
 			}
 		}
 
 		cost += literal_cost;
-		return cost;
 	}
 
 	// Calculate costs for matched portions
@@ -403,21 +409,6 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 
 		cost += len_cost + dist_cost;
 	}
-	else
-	{
-		// Handle remaining literals
-		float literal_cost = histo_cost(histogram, literal_value, mask_1);
-		uint8_t prev_byte = 0;
-		for (int i = 0; i < 16; i++)
-		{
-			if (mask_1.get_byte(i))
-			{
-				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
-				prev_byte = literal_value.get_byte(i);
-			}
-		}
-		cost += literal_cost;
-	}
 
 	// Handle second match portion similarly
 	if (mtf_value_2 != -1)
@@ -465,21 +456,6 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 		}
 
 		cost += len_cost + dist_cost;
-	}
-	else
-	{
-		// Handle remaining literals
-		float literal_cost = histo_cost(histogram, literal_value, mask_2);
-		uint8_t prev_byte = 0;
-		for (int i = 0; i < 16; i++)
-		{
-			if (mask_2.get_byte(i))
-			{
-				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
-				prev_byte = literal_value.get_byte(i);
-			}
-		}
-		cost += literal_cost;
 	}
 
 	return cost;
@@ -1541,7 +1517,15 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			Int128 best_weights_mask, best_endpoints_mask;
 			calculate_masks(best_weight_bits, best_weights_mask, best_endpoints_mask);
 
-			histo_update(&histogram, best_match, Int128::from_int(0).bitwise_not());
+			// Update histogram with literal mask
+			int best_mtf_weights_pos = mtf_search(&mtf_weights, best_match, best_weights_mask);
+			int best_mtf_endpoints_pos = mtf_search(&mtf_endpoints, best_match, best_endpoints_mask);
+			Int128 literal_mask = Int128::from_int(0);
+			if (best_mtf_weights_pos == -1)
+				literal_mask = literal_mask.bitwise_or(best_weights_mask);
+			if (best_mtf_endpoints_pos == -1)
+				literal_mask = literal_mask.bitwise_or(best_endpoints_mask);
+			histo_update(&histogram, best_match, literal_mask);
 			mtf_encode(&mtf_weights, best_match, best_weights_mask);
 			mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
 
