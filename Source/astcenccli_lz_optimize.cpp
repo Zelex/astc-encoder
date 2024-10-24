@@ -141,6 +141,7 @@ public:
 #define BEST_CANDIDATES_COUNT (16)
 #define MAX_THREADS (128)
 #define MODE_MASK (0x7FF)
+#define MAX_BLOCKS_PER_ITEM (8192)
 
 struct Histo
 {
@@ -401,6 +402,21 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 		}
 
 		cost += len_cost + dist_cost;
+	}
+	else
+	{
+		// Handle remaining literals
+		float literal_cost = histo_cost(histogram, literal_value, mask_1);
+		uint8_t prev_byte = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i))
+			{
+				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
+				prev_byte = literal_value.get_byte(i);
+			}
+		}
+		cost += literal_cost;
 	}
 
 	// Handle second match portion similarly
@@ -1188,7 +1204,6 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 {
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
-	const int max_blocks_per_item = 8192;
 	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
 	RDError* error_buffer = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
 
@@ -1223,8 +1238,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		{
 			// Calculate the work group boundary
 			long long current_block_idx = z * blocks_x * blocks_y + y * blocks_x + x;
-			long long work_group_start = (current_block_idx / max_blocks_per_item) * max_blocks_per_item;
-			long long work_group_end = astc::min(work_group_start + max_blocks_per_item, (long long)num_blocks);
+			long long work_group_start = (current_block_idx / MAX_BLOCKS_PER_ITEM) * MAX_BLOCKS_PER_ITEM;
+			long long work_group_end = astc::min(work_group_start + MAX_BLOCKS_PER_ITEM, (long long)num_blocks);
 
 			// Don't propagate if target block would be outside current work group
 			if (x < 0 || x >= blocks_x || y < 0 || y >= blocks_y || z < 0 || z >= blocks_z)
@@ -1576,9 +1591,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	auto run_pass = [&](bool is_forward)
 	{
 		// Fill the work queue
-		for (size_t start_block = 0; start_block < num_blocks; start_block += max_blocks_per_item)
+		for (size_t start_block = 0; start_block < num_blocks; start_block += MAX_BLOCKS_PER_ITEM)
 		{
-			size_t end_block = astc::min(start_block + max_blocks_per_item, num_blocks);
+			size_t end_block = astc::min(start_block + MAX_BLOCKS_PER_ITEM, num_blocks);
 			work_queue.push({start_block, end_block, is_forward});
 		}
 
@@ -1805,7 +1820,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	float lambda_0 = 0.0f;
 	float lambda_5 = 0.175f;
 	float lambda_10 = 0.275f;
-	float lambda_40 = 0.8f;
+	float lambda_40 = 0.9f;
 
 	if (lambda <= 0.0f)
 	{
