@@ -375,6 +375,121 @@ static inline float calculate_match_cost(int mtf_value, Int128 literal_value, In
 	return len_cost + dist_cost;
 }
 
+static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
+{
+	// Constants for modeling ZIP compression characteristics
+	const float MATCH_OVERHEAD = 3.0f;   // Bytes needed to encode match length/distance
+	const float LITERAL_OVERHEAD = 0.1f; // Small overhead for literal runs
+	const float MTF_DISCOUNT = 0.85f;    // Discount factor for recently used values
+	const float REPEAT_DISCOUNT = 0.7f;  // Additional discount for repeated matches
+	const int MAX_MATCH_BENEFIT = 16;    // Maximum benefit from a single match
+
+	float cost = 0.0f;
+
+	// Handle literal encoding when no MTF matches found
+	if (mtf_value_1 == -1 && mtf_value_2 == -1)
+	{
+		// Use histogram-based cost for literal bytes
+		cost = histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
+
+		// Add literal overhead
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i) || mask_2.get_byte(i))
+			{
+				literal_bytes++;
+			}
+		}
+		cost += LITERAL_OVERHEAD * literal_bytes;
+		return cost;
+	}
+
+	// Calculate costs for matched portions
+	if (mtf_value_1 != -1)
+	{
+		// Base cost for match encoding
+		float match_cost = MATCH_OVERHEAD;
+
+		// Calculate match length (number of bytes matched)
+		int match_length = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i))
+				match_length++;
+		}
+
+		// Adjust cost based on match position and length
+		float position_cost = log2_fast(mtf_value_1 + 1.0f);
+
+		// Apply MTF discount for recent matches
+		if (mtf_value_1 < 4)
+		{
+			position_cost *= MTF_DISCOUNT;
+		}
+
+		// Check for repeated matches
+		bool is_repeat = false;
+		if (mtf_value_1 > 0 && mtf_1->size > 0)
+		{
+			is_repeat = mtf_1->list[mtf_value_1].is_equal(mtf_1->list[mtf_value_1 - 1]);
+			if (is_repeat)
+			{
+				position_cost *= REPEAT_DISCOUNT;
+			}
+		}
+
+		// Cap the benefit from long matches
+		float match_benefit = (float)astc::min(match_length, MAX_MATCH_BENEFIT);
+		cost += match_cost + position_cost - match_benefit;
+	}
+
+	// Handle remaining literal portion if only partial match
+	if (mtf_value_2 == -1)
+	{
+		float literal_cost = histo_cost(histogram, literal_value, mask_2);
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_2.get_byte(i))
+				literal_bytes++;
+		}
+		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
+	}
+	else
+	{
+		// Handle second match similarly to first match
+		float match_cost = MATCH_OVERHEAD;
+		int match_length = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_2.get_byte(i))
+				match_length++;
+		}
+
+		float position_cost = log2_fast(mtf_value_2 + 1.0f);
+		if (mtf_value_2 < 4)
+		{
+			position_cost *= MTF_DISCOUNT;
+		}
+
+		bool is_repeat = false;
+		if (mtf_value_2 > 0 && mtf_2->size > 0)
+		{
+			is_repeat = mtf_2->list[mtf_value_2].is_equal(mtf_2->list[mtf_value_2 - 1]);
+			if (is_repeat)
+			{
+				position_cost *= REPEAT_DISCOUNT;
+			}
+		}
+
+		float match_benefit = (float)astc::min(match_length, MAX_MATCH_BENEFIT);
+		cost += match_cost + position_cost - match_benefit;
+	}
+
+	return cost;
+}
+
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
 {
 	const float LITERAL_CONTEXT_BITS = 0.5f;        // Cost for literal context modeling
@@ -1315,12 +1430,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, weights_mask);
 			int mtf_endpoints_pos = mtf_search(&mtf_endpoints, current_bits, endpoints_mask);
-			// float best_rd_cost = original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 
 			// Before computing best_rd_cost, get the propagated error
 			RDError propagated = error_buffer[block_index];
 			float adjusted_mse = original_mse + propagated.mse_error;
-			float adjusted_rate = calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+			float adjusted_rate = calculate_bit_cost_zip(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 			adjusted_rate += propagated.rate_error;
 
 			float best_rd_cost = adjusted_mse + lambda * adjusted_rate;
@@ -1361,8 +1475,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			};
 
 			// Add the current block to the candidates
-			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_weights_pos);
-			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost_2(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_endpoints_pos);
+			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_weights_pos);
+			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
 			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits_tbl);
@@ -1373,8 +1487,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
-			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
-			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
+			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
+			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
 
 			// Add ref2
 			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits_tbl);
@@ -1385,8 +1499,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
-			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
-			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_2(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
+			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
+			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * calculate_bit_cost_zip(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
 			for (int k = 0; k < mtf_endpoints.size; k++)
@@ -1402,7 +1516,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				// Find the corresponding weight position
 				int weight_pos = mtf_search(&mtf_weights, candidate_endpoints, weights_mask);
 
-				float bit_cost = calculate_bit_cost_2(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				float bit_cost = calculate_bit_cost_zip(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_endpoints if it's one of the best candidates
@@ -1414,7 +1528,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 				float mse2 = get_or_compute_mse(Int128(temp_block));
 				int weight_pos2 = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
-				float bit_cost2 = calculate_bit_cost_2(weight_pos2, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				float bit_cost2 = calculate_bit_cost_zip(weight_pos2, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 				float rd_cost2 = mse2 + lambda * bit_cost2;
 
 				add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost2, k);
@@ -1439,7 +1553,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					{
 						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
 						float mse = get_or_compute_mse(combined_bits);
-						float bit_cost = calculate_bit_cost_2(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+						float bit_cost = calculate_bit_cost_zip(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 						float rd_cost = mse + lambda * bit_cost;
 
 						// Insert into best_weights if it's one of the best candidates
@@ -1460,7 +1574,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					// Try candidate_endpoints as-is first
 					float mse = get_or_compute_mse(candidate_endpoints);
-					float rd_cost = mse + lambda * calculate_bit_cost_2(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					float rd_cost = mse + lambda * calculate_bit_cost_zip(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = candidate_endpoints;
@@ -1471,7 +1585,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					mse = get_or_compute_mse(temp_bits);
-					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					rd_cost = mse + lambda * calculate_bit_cost_zip(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
@@ -1485,7 +1599,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					mse = get_or_compute_mse(temp_bits);
-					rd_cost = mse + lambda * calculate_bit_cost_2(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					rd_cost = mse + lambda * calculate_bit_cost_zip(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
@@ -1517,7 +1631,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			// After finding the best match, propagate the error
 			float final_mse = get_or_compute_mse(best_match);
-			float final_rate = calculate_bit_cost_2(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, &mtf_weights, &mtf_endpoints, best_weights_mask, best_endpoints_mask, &histogram);
+			float final_rate = calculate_bit_cost_zip(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, &mtf_weights, &mtf_endpoints, best_weights_mask, best_endpoints_mask, &histogram);
 
 			float mse_diff = final_mse - adjusted_mse;
 			float rate_diff = final_rate - adjusted_rate;
