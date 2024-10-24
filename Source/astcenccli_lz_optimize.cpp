@@ -327,18 +327,18 @@ static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128
 	return log2_fast(mtf_value_1 + 1.f) + log2_fast(mtf_value_2 + 1.f);
 }
 
-template <typename T1, typename T2>
-static inline float calculate_ssd_weighted(const T1* img1, const T2* img2, int total, const float* weights, const vfloat4& channel_weights)
+static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* img2, int total, const float* weights, const vfloat4& channel_weights)
 {
 	vfloat4 sum = vfloat4::zero();
 
 	for (int i = 0; i < total; i += 4)
 	{
-		float weight = weights[i >> 2];
-		vfloat4 v1((float)img1[i], (float)img1[i + 1], (float)img1[i + 2], (float)img1[i + 3]);
-		vfloat4 v2((float)img2[i], (float)img2[i + 1], (float)img2[i + 2], (float)img2[i + 3]);
+		vint4 v1i(img1 + i);
+		vint4 v2i(img2 + i);
+		vfloat4 v1 = int_to_float(v1i);
+		vfloat4 v2 = int_to_float(v2i);
 		vfloat4 diff = v1 - v2;
-		sum += diff * diff * weight;
+		sum += diff * diff * weights[i >> 2];
 	}
 
 	return dot_s(sum, channel_weights);
