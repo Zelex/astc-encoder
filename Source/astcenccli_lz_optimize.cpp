@@ -344,17 +344,15 @@ static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* i
 	return dot_s(sum, channel_weights);
 }
 
-template <typename T1, typename T2>
-static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int total, const float* weights, const vfloat4& channel_weights)
+static inline float calculate_mrsse_weighted(const float* img1, const float* img2, int total, const float* weights, const vfloat4& channel_weights)
 {
 	vfloat4 sum = vfloat4::zero();
 	for (int i = 0; i < total; i += 4)
 	{
-		float weight = weights[i >> 2];
-		vfloat4 v1((float)img1[i], (float)img1[i + 1], (float)img1[i + 2], (float)img1[i + 3]);
-		vfloat4 v2((float)img2[i], (float)img2[i + 1], (float)img2[i + 2], (float)img2[i + 3]);
+		vfloat4 v1(img1 + i);
+		vfloat4 v2(img2 + i);
 		vfloat4 diff = v1 - v2;
-		sum += diff * diff * weight;
+		sum += diff * diff * weights[i >> 2];
 	}
 	return dot_s(sum, channel_weights) * 256.0f;
 }
