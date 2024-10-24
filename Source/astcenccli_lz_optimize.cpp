@@ -339,34 +339,26 @@ static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* i
 	for (i = 0; i < total - 15; i += 16)
 	{
 		// Load and process first 4 pixels
-		vint4 v1i(img1 + i);
-		vint4 v2i(img2 + i);
-		vfloat4 v1 = int_to_float(v1i);
-		vfloat4 v2 = int_to_float(v2i);
+		vfloat4 v1 = int_to_float(vint4(img1 + i));
+		vfloat4 v2 = int_to_float(vint4(img2 + i));
 		vfloat4 diff = v1 - v2;
 		sum0 += diff * diff * weights[i >> 2];
 
 		// Load and process next 4 pixels
-		v1i = vint4(img1 + i + 4);
-		v2i = vint4(img2 + i + 4);
-		v1 = int_to_float(v1i);
-		v2 = int_to_float(v2i);
+		v1 = int_to_float(vint4(img1 + i + 4));
+		v2 = int_to_float(vint4(img2 + i + 4));
 		diff = v1 - v2;
 		sum1 += diff * diff * weights[(i >> 2) + 1];
 
 		// Load and process next 4 pixels
-		v1i = vint4(img1 + i + 8);
-		v2i = vint4(img2 + i + 8);
-		v1 = int_to_float(v1i);
-		v2 = int_to_float(v2i);
+		v1 = int_to_float(vint4(img1 + i + 8));
+		v2 = int_to_float(vint4(img2 + i + 8));
 		diff = v1 - v2;
 		sum2 += diff * diff * weights[(i >> 2) + 2];
 
 		// Load and process final 4 pixels
-		v1i = vint4(img1 + i + 12);
-		v2i = vint4(img2 + i + 12);
-		v1 = int_to_float(v1i);
-		v2 = int_to_float(v2i);
+		v1 = int_to_float(vint4(img1 + i + 12));
+		v2 = int_to_float(vint4(img2 + i + 12));
 		diff = v1 - v2;
 		sum3 += diff * diff * weights[(i >> 2) + 3];
 	}
@@ -374,10 +366,8 @@ static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* i
 	// Handle remaining pixels
 	for (; i < total; i += 4)
 	{
-		vint4 v1i(img1 + i);
-		vint4 v2i(img2 + i);
-		vfloat4 v1 = int_to_float(v1i);
-		vfloat4 v2 = int_to_float(v2i);
+		vfloat4 v1 = int_to_float(vint4(img1 + i));
+		vfloat4 v2 = int_to_float(vint4(img2 + i));
 		vfloat4 diff = v1 - v2;
 		sum0 += diff * diff * weights[i >> 2];
 	}
@@ -388,15 +378,51 @@ static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* i
 
 static inline float calculate_mrsse_weighted(const float* img1, const float* img2, int total, const float* weights, const vfloat4& channel_weights)
 {
-	vfloat4 sum = vfloat4::zero();
-	for (int i = 0; i < total; i += 4)
+	vfloat4 sum0 = vfloat4::zero();
+	vfloat4 sum1 = vfloat4::zero();
+	vfloat4 sum2 = vfloat4::zero();
+	vfloat4 sum3 = vfloat4::zero();
+
+	// Process 16 pixels (64 floats) per iteration
+	int i;
+	for (i = 0; i < total - 15; i += 16)
+	{
+		// Process first 4 pixels
+		vfloat4 v1(img1 + i);
+		vfloat4 v2(img2 + i);
+		vfloat4 diff = v1 - v2;
+		sum0 += diff * diff * weights[i >> 2];
+
+		// Process next 4 pixels
+		v1 = vfloat4(img1 + i + 4);
+		v2 = vfloat4(img2 + i + 4);
+		diff = v1 - v2;
+		sum1 += diff * diff * weights[(i >> 2) + 1];
+
+		// Process next 4 pixels
+		v1 = vfloat4(img1 + i + 8);
+		v2 = vfloat4(img2 + i + 8);
+		diff = v1 - v2;
+		sum2 += diff * diff * weights[(i >> 2) + 2];
+
+		// Process final 4 pixels
+		v1 = vfloat4(img1 + i + 12);
+		v2 = vfloat4(img2 + i + 12);
+		diff = v1 - v2;
+		sum3 += diff * diff * weights[(i >> 2) + 3];
+	}
+
+	// Handle remaining pixels
+	for (; i < total; i += 4)
 	{
 		vfloat4 v1(img1 + i);
 		vfloat4 v2(img2 + i);
 		vfloat4 diff = v1 - v2;
-		sum += diff * diff * weights[i >> 2];
+		sum0 += diff * diff * weights[i >> 2];
 	}
-	return dot_s(sum, channel_weights) * 256.0f;
+
+	// Combine all sums, apply channel weights, and scale by 256.0f
+	return dot_s((sum0 + sum1 + sum2 + sum3), channel_weights) * 256.0f;
 }
 
 static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_t* block_ptr, uint8_t* output, int block_width, int block_height, int block_depth, int block_type)
