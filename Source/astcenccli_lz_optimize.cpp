@@ -20,100 +20,119 @@
 #include "astcenc_vecmathlib.h"
 #include "astcenccli_internal.h"
 
-struct Int128 {
+struct Int128
+{
 private:
-    union {
-        struct {
-            uint64_t lo;
-            uint64_t hi;
-        };
-        uint8_t bytes[16];
-#if defined(_MSC_VER) && defined(_M_X64)
-        __m128i simd;
-#endif
-    };
+	union
+	{
+		struct
+		{
+			uint64_t lo;
+			uint64_t hi;
+		};
+		uint8_t bytes[16];
+	};
 
 public:
-    Int128() : lo(0), hi(0) {}
+	Int128() : lo(0), hi(0)
+	{
+	}
 
-    explicit Int128(const uint8_t* data) {
-        memcpy(bytes, data, 16);
-    }
+	explicit Int128(const uint8_t* data)
+	{
+		memcpy(bytes, data, 16);
+	}
 
-    void to_bytes(uint8_t* data) const {
-        memcpy(data, bytes, 16);
-    }
+	void to_bytes(uint8_t* data) const
+	{
+		memcpy(data, bytes, 16);
+	}
 
-    uint8_t get_byte(int index) const {
-        return bytes[index];
-    }
+	uint8_t get_byte(int index) const
+	{
+		return bytes[index];
+	}
 
-    Int128 shift_left(int shift) const {
-        Int128 result;
-        if (shift >= 128) {
-            return result; // Returns zero
-        }
-        if (shift == 0) {
-            return *this;
-        }
-        if (shift < 64) {
-            result.hi = (hi << shift) | (lo >> (64 - shift));
-            result.lo = lo << shift;
-        } else {
-            result.hi = lo << (shift - 64);
-            result.lo = 0;
-        }
-        return result;
-    }
+	Int128 shift_left(int shift) const
+	{
+		Int128 result;
+		if (shift >= 128)
+		{
+			return result; // Returns zero
+		}
+		if (shift == 0)
+		{
+			return *this;
+		}
+		if (shift < 64)
+		{
+			result.hi = (hi << shift) | (lo >> (64 - shift));
+			result.lo = lo << shift;
+		}
+		else
+		{
+			result.hi = lo << (shift - 64);
+			result.lo = 0;
+		}
+		return result;
+	}
 
-    Int128 bitwise_and(const Int128& other) const {
-        Int128 result;
-        result.lo = lo & other.lo;
-        result.hi = hi & other.hi;
-        return result;
-    }
+	Int128 bitwise_and(const Int128& other) const
+	{
+		Int128 result;
+		result.lo = lo & other.lo;
+		result.hi = hi & other.hi;
+		return result;
+	}
 
-    Int128 bitwise_or(const Int128& other) const {
-        Int128 result;
-        result.lo = lo | other.lo;
-        result.hi = hi | other.hi;
-        return result;
-    }
+	Int128 bitwise_or(const Int128& other) const
+	{
+		Int128 result;
+		result.lo = lo | other.lo;
+		result.hi = hi | other.hi;
+		return result;
+	}
 
-    bool is_equal(const Int128& other) const {
-        return lo == other.lo && hi == other.hi;
-    }
+	bool is_equal(const Int128& other) const
+	{
+		return lo == other.lo && hi == other.hi;
+	}
 
-    static Int128 from_int(long long val) {
-        Int128 result;
-        result.lo = val;
-        result.hi = val < 0 ? -1LL : 0;
-        return result;
-    }
+	static Int128 from_int(long long val)
+	{
+		Int128 result;
+		result.lo = val;
+		result.hi = val < 0 ? -1LL : 0;
+		return result;
+	}
 
-    Int128 subtract(const Int128& other) const {
-        Int128 result;
-        result.lo = lo - other.lo;
-        result.hi = hi - other.hi - (lo < other.lo ? 1 : 0);
-        return result;
-    }
+	Int128 subtract(const Int128& other) const
+	{
+		Int128 result;
+		result.lo = lo - other.lo;
+		result.hi = hi - other.hi - (lo < other.lo ? 1 : 0);
+		return result;
+	}
 
-    Int128 bitwise_not() const {
-        Int128 result;
-        result.lo = ~lo;
-        result.hi = ~hi;
-        return result;
-    }
+	Int128 bitwise_not() const
+	{
+		Int128 result;
+		result.lo = ~lo;
+		result.hi = ~hi;
+		return result;
+	}
 
-    uint64_t get_uint64(int index) const {
-        return index == 0 ? lo : hi;
-    }
+	uint64_t get_uint64(int index) const
+	{
+		return index == 0 ? lo : hi;
+	}
 
-    std::string to_string() const {
-        char buffer[33];
-        snprintf(buffer, sizeof(buffer), "%016llx%016llx", hi, lo);
-        return std::string(buffer);
-    }
+	std::string to_string() const
+	{
+		char buffer[33];
+		snprintf(buffer, sizeof(buffer), "%016llx%016llx", hi, lo);
+		return std::string(buffer);
+	}
 };
 
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
@@ -976,13 +995,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	size_t num_blocks = data_len / block_size;
 	const int max_blocks_per_item = 8192;
 	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
-
-	// Allocate error diffusion buffers - one per thread
-	RDError** error_buffers = (RDError**)malloc(num_threads * sizeof(RDError*));
-	for (int i = 0; i < num_threads; i++)
-	{
-		error_buffers[i] = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
-	}
+	RDError* error_buffer = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
 
 	// Initialize weight bits table
 	uint8_t* weight_bits_tbl = (uint8_t*)malloc(2048);
@@ -1010,9 +1023,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
 		histo_reset(&histogram);
 
-		RDError* error_buffer = error_buffers[thread_id];
-
-		// Helper function to propagate errors
+		// Use shared error_buffer instead of thread-specific one
 		auto propagate_error = [&](long long x, long long y, long long z, float mse_diff, float rate_diff, bool is_forward)
 		{
 			// Calculate the work group boundary
@@ -1226,17 +1237,15 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				add_candidate(best_endpoints, endpoints_count, candidate_endpoints, rd_cost, k);
 
 #if 0 // Worse results... TODO/Fixme
-				{
-					uint8_t temp_block[16];
-					optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
+				uint8_t temp_block[16];
+				optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
 
-					float mse = get_or_compute_mse(Int128(temp_block));
-					int weight_pos = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
-					float bit_cost = calculate_bit_cost_2(weight_pos, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
-					float rd_cost = mse + lambda * bit_cost;
+				float mse2 = get_or_compute_mse(Int128(temp_block));
+				int weight_pos2 = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
+				float bit_cost2 = calculate_bit_cost_2(weight_pos2, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				float rd_cost2 = mse2 + lambda * bit_cost2;
 
-					add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost, k);
-				}
+				add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost2, k);
 #endif
 			}
 
@@ -1405,13 +1414,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 	// Run forward pass
 	run_pass(true);
 
-	// Clean up error buffers
-	for (int i = 0; i < num_threads; i++)
-	{
-		free(error_buffers[i]);
-	}
-	free(error_buffers);
-
+	free(error_buffer);
 	free(weight_bits_tbl);
 }
 
