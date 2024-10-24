@@ -312,19 +312,122 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 
 static float calculate_bit_cost_2(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
 {
+	// Constants for modeling ZIP compression characteristics
+	const float MATCH_OVERHEAD = 3.0f;   // Bytes needed to encode match length/distance
+	const float LITERAL_OVERHEAD = 0.1f; // Small overhead for literal runs
+	const float MTF_DISCOUNT = 0.85f;    // Discount factor for recently used values
+	const float REPEAT_DISCOUNT = 0.7f;  // Additional discount for repeated matches
+	const int MAX_MATCH_BENEFIT = 16;    // Maximum benefit from a single match
+
+	float cost = 0.0f;
+
+	// Handle literal encoding when no MTF matches found
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
 	{
-		return histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
+		// Use histogram-based cost for literal bytes
+		cost = histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
+
+		// Add literal overhead
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i) || mask_2.get_byte(i))
+			{
+				literal_bytes++;
+			}
+		}
+		cost += LITERAL_OVERHEAD * literal_bytes;
+		return cost;
 	}
-	else if (mtf_value_1 == -1)
+
+	// Calculate costs for matched portions
+	if (mtf_value_1 != -1)
 	{
-		return histo_cost(histogram, literal_value, mask_1) + log2_fast(mtf_value_2 + 1.f);
+		// Base cost for match encoding
+		float match_cost = MATCH_OVERHEAD;
+
+		// Calculate match length (number of bytes matched)
+		int match_length = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i))
+				match_length++;
+		}
+
+		// Adjust cost based on match position and length
+		float position_cost = log2_fast(mtf_value_1 + 1.0f);
+
+		// Apply MTF discount for recent matches
+		if (mtf_value_1 < 4)
+		{
+			position_cost *= MTF_DISCOUNT;
+		}
+
+		// Check for repeated matches, but only compare masked portions
+		bool is_repeat = false;
+		if (mtf_value_1 > 0 && mtf_1->size > 0)
+		{
+			Int128 current_masked = literal_value.bitwise_and(mask_1);
+			Int128 prev_masked = mtf_1->list[mtf_value_1 - 1].bitwise_and(mask_1);
+			is_repeat = current_masked.is_equal(prev_masked);
+			if (is_repeat)
+			{
+				position_cost *= REPEAT_DISCOUNT;
+			}
+		}
+
+		// Cap the benefit from long matches
+		float match_benefit = astc::min(match_length, MAX_MATCH_BENEFIT);
+		cost += match_cost + position_cost - match_benefit;
 	}
-	else if (mtf_value_2 == -1)
+
+	// Handle remaining literal portion if only partial match
+	if (mtf_value_2 == -1)
 	{
-		return histo_cost(histogram, literal_value, mask_2) + log2_fast(mtf_value_1 + 1.f);
+		float literal_cost = histo_cost(histogram, literal_value, mask_2);
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_2.get_byte(i))
+				literal_bytes++;
+		}
+		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
 	}
-	return log2_fast(mtf_value_1 + 1.f) + log2_fast(mtf_value_2 + 1.f);
+	else
+	{
+		// Handle second match similarly to first match
+		float match_cost = MATCH_OVERHEAD;
+		int match_length = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_2.get_byte(i))
+				match_length++;
+		}
+
+		float position_cost = log2_fast(mtf_value_2 + 1.0f);
+		if (mtf_value_2 < 4)
+		{
+			position_cost *= MTF_DISCOUNT;
+		}
+
+		// Check for repeated matches with mask for second portion
+		bool is_repeat = false;
+		if (mtf_value_2 > 0 && mtf_2->size > 0)
+		{
+			Int128 current_masked = literal_value.bitwise_and(mask_2);
+			Int128 prev_masked = mtf_2->list[mtf_value_2 - 1].bitwise_and(mask_2);
+			is_repeat = current_masked.is_equal(prev_masked);
+			if (is_repeat)
+			{
+				position_cost *= REPEAT_DISCOUNT;
+			}
+		}
+
+		float match_benefit = astc::min(match_length, MAX_MATCH_BENEFIT);
+		cost += match_cost + position_cost - match_benefit;
+	}
+
+	return cost;
 }
 
 static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* img2, int total, const float* weights, const vfloat4& channel_weights)
