@@ -20,165 +20,100 @@
 #include "astcenc_vecmathlib.h"
 #include "astcenccli_internal.h"
 
-class Int128
-{
+struct Int128 {
 private:
+    union {
+        struct {
+            uint64_t lo;
+            uint64_t hi;
+        };
+        uint8_t bytes[16];
 #if defined(_MSC_VER) && defined(_M_X64)
-	__m128i value;
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-	__int128 value;
-#else
-#error "No 128-bit integer type available for this platform"
+        __m128i simd;
 #endif
+    };
 
 public:
-	Int128() : value{}
-	{
-	}
+    Int128() : lo(0), hi(0) {}
 
-	explicit Int128(const uint8_t* bytes)
-	{
-#if defined(_MSC_VER) && defined(_M_X64)
-		value = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		memcpy(&value, bytes, 16);
-#endif
-	}
+    explicit Int128(const uint8_t* data) {
+        memcpy(bytes, data, 16);
+    }
 
-	void to_bytes(uint8_t* bytes) const
-	{
-#if defined(_MSC_VER) && defined(_M_X64)
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(bytes), value);
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		memcpy(bytes, &value, 16);
-#endif
-	}
+    void to_bytes(uint8_t* data) const {
+        memcpy(data, bytes, 16);
+    }
 
-	uint8_t get_byte(int index) const
-	{
-#if defined(_MSC_VER) && defined(_M_X64)
-		return reinterpret_cast<const uint8_t*>(&value)[index];
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		return (value >> (index * 8)) & 0xFF;
-#endif
-	}
+    uint8_t get_byte(int index) const {
+        return bytes[index];
+    }
 
-	Int128 shift_left(int shift) const
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		if (shift >= 128)
-		{
-			result.value = _mm_setzero_si128();
-		}
-		else if (shift == 0)
-		{
-			result.value = value;
-		}
-		else if (shift < 64)
-		{
-			__m128i lo = _mm_slli_epi64(value, shift);
-			__m128i hi = _mm_slli_epi64(_mm_srli_si128(value, 8), shift);
-			__m128i v_cross = _mm_srli_epi64(value, 64 - shift);
-			v_cross = _mm_and_si128(v_cross, _mm_set_epi64x(0, -1));
-			hi = _mm_or_si128(hi, v_cross);
-			result.value = _mm_or_si128(_mm_slli_si128(hi, 8), lo);
-		}
-		else
-		{
-			__m128i hi = _mm_slli_epi64(value, shift - 64 + 1);
-			result.value = _mm_slli_si128(hi, 8);
-		}
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = value << shift;
-#endif
-		return result;
-	}
+    Int128 shift_left(int shift) const {
+        Int128 result;
+        if (shift >= 128) {
+            return result; // Returns zero
+        }
+        if (shift == 0) {
+            return *this;
+        }
+        if (shift < 64) {
+            result.hi = (hi << shift) | (lo >> (64 - shift));
+            result.lo = lo << shift;
+        } else {
+            result.hi = lo << (shift - 64);
+            result.lo = 0;
+        }
+        return result;
+    }
 
-	Int128 bitwise_and(const Int128& other) const
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		result.value = _mm_and_si128(value, other.value);
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = value & other.value;
-#endif
-		return result;
-	}
+    Int128 bitwise_and(const Int128& other) const {
+        Int128 result;
+        result.lo = lo & other.lo;
+        result.hi = hi & other.hi;
+        return result;
+    }
 
-	Int128 bitwise_or(const Int128& other) const
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		result.value = _mm_or_si128(value, other.value);
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = value | other.value;
-#endif
-		return result;
-	}
+    Int128 bitwise_or(const Int128& other) const {
+        Int128 result;
+        result.lo = lo | other.lo;
+        result.hi = hi | other.hi;
+        return result;
+    }
 
-	bool is_equal(const Int128& other) const
-	{
-#if defined(_MSC_VER) && defined(_M_X64)
-		return _mm_movemask_epi8(_mm_cmpeq_epi8(value, other.value)) == 0xFFFF;
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		return value == other.value;
-#endif
-	}
+    bool is_equal(const Int128& other) const {
+        return lo == other.lo && hi == other.hi;
+    }
 
-	static Int128 from_int(long long val)
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		result.value = _mm_set_epi64x(0, val);
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = static_cast<__int128>(val);
-#endif
-		return result;
-	}
+    static Int128 from_int(long long val) {
+        Int128 result;
+        result.lo = val;
+        result.hi = val < 0 ? -1LL : 0;
+        return result;
+    }
 
-	Int128 subtract(const Int128& other) const
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		__m128i borrow = _mm_setzero_si128();
-		result.value = _mm_sub_epi64(value, other.value);
-		borrow = _mm_srli_epi64(_mm_cmpgt_epi64(other.value, value), 63);
-		__m128i high_result = _mm_sub_epi64(_mm_srli_si128(value, 8), _mm_srli_si128(other.value, 8));
-		high_result = _mm_sub_epi64(high_result, borrow);
-		result.value = _mm_or_si128(result.value, _mm_slli_si128(high_result, 8));
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = value - other.value;
-#endif
-		return result;
-	}
+    Int128 subtract(const Int128& other) const {
+        Int128 result;
+        result.lo = lo - other.lo;
+        result.hi = hi - other.hi - (lo < other.lo ? 1 : 0);
+        return result;
+    }
 
-	Int128 bitwise_not() const
-	{
-		Int128 result;
-#if defined(_MSC_VER) && defined(_M_X64)
-		result.value = _mm_xor_si128(value, _mm_set1_epi32(-1));
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		result.value = ~value;
-#endif
-		return result;
-	}
+    Int128 bitwise_not() const {
+        Int128 result;
+        result.lo = ~lo;
+        result.hi = ~hi;
+        return result;
+    }
 
-	uint64_t get_uint64(int index) const
-	{
-#if defined(_MSC_VER) && defined(_M_X64)
-		return reinterpret_cast<const uint64_t*>(&value)[index];
-#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
-		return (index == 0) ? (uint64_t)value : (uint64_t)(value >> 64);
-#endif
-	}
+    uint64_t get_uint64(int index) const {
+        return index == 0 ? lo : hi;
+    }
 
-	std::string to_string() const
-	{
-		char buffer[33];
-		snprintf(buffer, sizeof(buffer), "%016llx%016llx", get_uint64(1), get_uint64(0));
-		return std::string(buffer);
-	}
+    std::string to_string() const {
+        char buffer[33];
+        snprintf(buffer, sizeof(buffer), "%016llx%016llx", hi, lo);
+        return std::string(buffer);
+    }
 };
 
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
@@ -371,7 +306,9 @@ static inline float calculate_mrsse_weighted(const T1* img1, const T2* img2, int
 	for (int i = 0; i < total; i += 4)
 	{
 		float weight = weights[i >> 2];
-		vfloat4 diff = vfloat4((float)img1[i] - (float)img2[i], (float)img1[i + 1] - (float)img2[i + 1], (float)img1[i + 2] - (float)img2[i + 2], (float)img1[i + 3] - (float)img2[i + 3]);
+		vfloat4 v1((float)img1[i], (float)img1[i + 1], (float)img1[i + 2], (float)img1[i + 3]);
+		vfloat4 v2((float)img2[i], (float)img2[i + 1], (float)img2[i + 2], (float)img2[i + 3]);
+		vfloat4 diff = v1 - v2;
 		sum += diff * diff * weight;
 	}
 	return dot_s(sum, channel_weights) * 256.0f;
