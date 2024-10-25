@@ -138,7 +138,7 @@ public:
 #define MAX_MTF_SIZE (256 + 64 + 16 + 1)
 // #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define CACHE_SIZE (0x10000) // Should be a power of 2 for efficient modulo operation
-#define BEST_CANDIDATES_COUNT (16)
+#define BEST_CANDIDATES_COUNT (8)
 #define MAX_THREADS (128)
 #define MODE_MASK (0x7FF)
 #define MAX_BLOCKS_PER_ITEM (8192)
