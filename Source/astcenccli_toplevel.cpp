@@ -2301,7 +2301,7 @@ int astcenc_main(
 			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
 			vfloat4 channel_weights = vfloat4(config.cw_r_weight, config.cw_g_weight, config.cw_b_weight, config.cw_a_weight);
-			optimize_for_lz(buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, cli_config.lz_optimize_rdo, channel_weights);
+			optimize_for_lz(buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, &cli_config);
 		}
 
 		// Clean up

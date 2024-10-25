@@ -1047,12 +1047,34 @@ struct RDError
 	float rate_error;
 };
 
-static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights)
+static void dual_mtf_pass(cli_config_options *config, uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights)
 {
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
-	const int num_threads = astc::min(MAX_THREADS, (int)std::thread::hardware_concurrency());
+	const int num_threads = astc::min((int)config->thread_count, MAX_THREADS, (int)std::thread::hardware_concurrency());
 	RDError* error_buffer = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
+
+    // Add progress tracking
+    std::atomic<size_t> blocks_processed{0};
+    const size_t total_blocks = num_blocks * 2; // For both forward and backward passes
+    
+    auto print_progress = [&blocks_processed, total_blocks, config]() {
+        const int bar_width = 50;
+        float progress = static_cast<float>(blocks_processed) / total_blocks;
+        int pos = static_cast<int>(bar_width * progress);
+        
+		if (!config->silentmode)
+		{
+			printf("\rOptimizing: [");
+			for (int i = 0; i < bar_width; ++i) {
+				if (i < pos) printf("=");
+				else if (i == pos) printf(">");
+				else printf(" ");
+			}
+			printf("] %3d%%", static_cast<int>(progress * 100.0f));
+			fflush(stdout);
+		}
+    };
 
 	// Initialize weight bits table
 	uint8_t* weight_bits_tbl = (uint8_t*)malloc(2048);
@@ -1408,6 +1430,12 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			float rate_diff = final_rate - adjusted_rate;
 
 			propagate_error(x, y, z, mse_diff, rate_diff, is_forward);
+
+            // Update progress after processing each block
+            blocks_processed++;
+            if (thread_id == 0) { // Only thread 0 prints progress
+                print_progress();
+            }
 		};
 
 		while (true)
@@ -1473,11 +1501,17 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 		work_queue = std::queue<WorkItem>();
 	};
 
+	if (!config->silentmode) 
+		printf("Starting optimization pass...\n");
+
 	// Run backward pass
 	run_pass(false);
 
 	// Run forward pass
 	run_pass(true);
+
+	if (!config->silentmode)
+		printf("\nOptimization complete!\n");
 
 	free(error_buffer);
 	free(weight_bits_tbl);
@@ -1729,8 +1763,10 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 	}
 }
 
-void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, vfloat4 channel_weights)
+void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, vfloat4 channel_weights, cli_config_options *config)
 {
+	float lambda = config->lz_optimize_rdo;
+
 	// nothing to do if lambda is 0
 	if (lambda <= 0)
 	{
@@ -1821,8 +1857,8 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	// Convert high-pass filtered image back to block gradients
 	high_pass_to_block_gradients(high_pass_image, block_gradients, width, height, depth, block_width, block_height, block_depth);
 
-	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
-	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
+	dual_mtf_pass(config, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
+	dual_mtf_pass(config, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
 
 	// Clean up
 	free(bsd);

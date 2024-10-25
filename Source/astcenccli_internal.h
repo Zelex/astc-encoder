@@ -438,8 +438,8 @@ int astcenc_main(
  * @param block_height   The height of each compressed block.
  * @param block_depth    The depth of each compressed block.
  * @param block_type    The type of each compressed block.
- * @param lambda        The rate-distortion trade-off parameter.
  * @param channel_weights The channel weights for the image.
+ * @param config          The CLI configuration options.
  */
 void optimize_for_lz(
     uint8_t* data,
@@ -452,8 +452,8 @@ void optimize_for_lz(
     int block_height,
     int block_depth,
     int block_type,
-	float lambda,
-	vfloat4 channel_weights
+	vfloat4 channel_weights,
+	cli_config_options *config
 );
 
 
