@@ -1561,19 +1561,31 @@ static void apply_1d_convolution_3d(const T* input, T* output, int width, int he
 			for (int x = 0; x < width; x++)
 			{
 				float sum[4] = {0};
+				float kernel_sum = 0.0f; // Track the sum of kernel weights used
+
 				for (int k = -kernel_radius; k <= kernel_radius; k++)
 				{
 					int sx = direction == 0 ? x + k : x;
 					int sy = direction == 1 ? y + k : y;
 					int sz = direction == 2 ? z + k : z;
+
 					if (sx >= 0 && sx < width && sy >= 0 && sy < height && sz >= 0 && sz < depth)
 					{
 						const T* pixel = input + (sz * height * width + sy * width + sx) * channels;
 						float kvalue = kernel[k + kernel_radius];
+						kernel_sum += kvalue;
 						for (int c = 0; c < channels; c++)
 							sum[c] += pixel[c] * kvalue;
 					}
 				}
+
+				// Normalize by the actual sum of kernel weights used
+				if (kernel_sum > 0.0f)
+				{
+					for (int c = 0; c < channels; c++)
+						sum[c] /= kernel_sum;
+				}
+
 				T* out_pixel = output + (z * height * width + y * width + x) * channels;
 				for (int c = 0; c < channels; c++)
 					if (std::is_same_v<T, uint8_t>)
