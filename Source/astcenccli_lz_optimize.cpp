@@ -410,14 +410,14 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 	/*
 	if (mtf_value_1 == -1)
 	{
-		float literal_cost = histo_cost(histogram, literal_value, mask_1);
-		int literal_bytes = 0;
-		for (int i = 0; i < 16; i++)
-		{
-			if (mask_1.get_byte(i))
-				literal_bytes++;
-		}
-		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
+	    float literal_cost = histo_cost(histogram, literal_value, mask_1);
+	    int literal_bytes = 0;
+	    for (int i = 0; i < 16; i++)
+	    {
+	        if (mask_1.get_byte(i))
+	            literal_bytes++;
+	    }
+	    cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
 	}
 	else
 	*/
@@ -447,7 +447,9 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 		bool is_repeat = false;
 		if (mtf_value_1 > 0 && mtf_1->size > 0)
 		{
-			is_repeat = mtf_1->list[mtf_value_1].is_equal(mtf_1->list[mtf_value_1 - 1]);
+			Int128 current_masked = literal_value.bitwise_and(mask_1);
+			Int128 prev_masked = mtf_1->list[mtf_value_1 - 1].bitwise_and(mask_1);
+			is_repeat = current_masked.is_equal(prev_masked);
 			if (is_repeat)
 			{
 				position_cost *= REPEAT_DISCOUNT;
@@ -491,7 +493,9 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 		bool is_repeat = false;
 		if (mtf_value_2 > 0 && mtf_2->size > 0)
 		{
-			is_repeat = mtf_2->list[mtf_value_2].is_equal(mtf_2->list[mtf_value_2 - 1]);
+			Int128 current_masked = literal_value.bitwise_and(mask_2);
+			Int128 prev_masked = mtf_2->list[mtf_value_2 - 1].bitwise_and(mask_2);
+			is_repeat = current_masked.is_equal(prev_masked);
 			if (is_repeat)
 			{
 				position_cost *= REPEAT_DISCOUNT;
