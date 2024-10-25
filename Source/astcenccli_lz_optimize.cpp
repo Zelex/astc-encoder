@@ -1047,34 +1047,39 @@ struct RDError
 	float rate_error;
 };
 
-static void dual_mtf_pass(cli_config_options *config, uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights)
+static void dual_mtf_pass(cli_config_options* config, uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights)
 {
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
 	const int num_threads = astc::min((int)config->thread_count, MAX_THREADS, (int)std::thread::hardware_concurrency());
 	RDError* error_buffer = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
 
-    // Add progress tracking
-    std::atomic<size_t> blocks_processed{0};
-    const size_t total_blocks = num_blocks * 2; // For both forward and backward passes
-    
-    auto print_progress = [&blocks_processed, total_blocks, config]() {
-        const int bar_width = 50;
-        float progress = static_cast<float>(blocks_processed) / total_blocks;
-        int pos = static_cast<int>(bar_width * progress);
-        
+	// Add progress tracking
+	std::atomic<size_t> blocks_processed{0};
+	const size_t total_blocks = num_blocks * 2; // For both forward and backward passes
+
+	auto print_progress = [&blocks_processed, total_blocks, config]()
+	{
+		const int bar_width = 50;
+		float progress = static_cast<float>(blocks_processed) / total_blocks;
+		int pos = static_cast<int>(bar_width * progress);
+
 		if (!config->silentmode)
 		{
 			printf("\rOptimizing: [");
-			for (int i = 0; i < bar_width; ++i) {
-				if (i < pos) printf("=");
-				else if (i == pos) printf(">");
-				else printf(" ");
+			for (int i = 0; i < bar_width; ++i)
+			{
+				if (i < pos)
+					printf("=");
+				else if (i == pos)
+					printf(">");
+				else
+					printf(" ");
 			}
 			printf("] %3d%%", static_cast<int>(progress * 100.0f));
 			fflush(stdout);
 		}
-    };
+	};
 
 	// Initialize weight bits table
 	uint8_t* weight_bits_tbl = (uint8_t*)malloc(2048);
@@ -1431,11 +1436,12 @@ static void dual_mtf_pass(cli_config_options *config, uint8_t* data, uint8_t* re
 
 			propagate_error(x, y, z, mse_diff, rate_diff, is_forward);
 
-            // Update progress after processing each block
-            blocks_processed++;
-            if (thread_id == 0) { // Only thread 0 prints progress
-                print_progress();
-            }
+			// Update progress after processing each block
+			blocks_processed++;
+			if (thread_id == 0)
+			{ // Only thread 0 prints progress
+				print_progress();
+			}
 		};
 
 		while (true)
@@ -1501,7 +1507,7 @@ static void dual_mtf_pass(cli_config_options *config, uint8_t* data, uint8_t* re
 		work_queue = std::queue<WorkItem>();
 	};
 
-	if (!config->silentmode) 
+	if (!config->silentmode)
 		printf("Starting optimization pass...\n");
 
 	// Run backward pass
@@ -1763,7 +1769,7 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 	}
 }
 
-void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, vfloat4 channel_weights, cli_config_options *config)
+void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, vfloat4 channel_weights, cli_config_options* config)
 {
 	float lambda = config->lz_optimize_rdo;
 
