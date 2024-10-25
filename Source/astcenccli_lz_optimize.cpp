@@ -407,6 +407,7 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 	}
 
 	// Calculate costs for matched portions
+	// TODO/Fixme: this should be here, but its making things worse! unsure why.
 	/*
 	if (mtf_value_1 == -1)
 	{
@@ -543,6 +544,7 @@ static float calculate_bit_cost_lzma(int mtf_value_1, int mtf_value_2, const Int
 	}
 	else if (mtf_value_1 == -1)
 	{
+		/*
 		// Literal followed by match
 		float literal_cost = histo_cost(histogram, literal_value, mask_1);
 		uint8_t prev_byte = 0;
@@ -556,6 +558,7 @@ static float calculate_bit_cost_lzma(int mtf_value_1, int mtf_value_2, const Int
 			}
 		}
 		cost += literal_cost;
+		*/
 
 		// Match after literals
 		cost += calculate_match_cost(mtf_value_2, literal_value, mask_2, mtf_2);
