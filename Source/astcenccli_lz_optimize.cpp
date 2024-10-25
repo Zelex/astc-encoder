@@ -376,14 +376,15 @@ static inline float calculate_match_cost(int mtf_value, Int128 literal_value, In
 	return len_cost + dist_cost;
 }
 
-static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
+static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram, const float* gradients)
 {
 	// Constants for modeling ZIP compression characteristics
-	const float MATCH_OVERHEAD = 3.0f;   // Bytes needed to encode match length/distance
-	const float LITERAL_OVERHEAD = 0.1f; // Small overhead for literal runs
-	const float MTF_DISCOUNT = 0.85f;    // Discount factor for recently used values
-	const float REPEAT_DISCOUNT = 0.7f;  // Additional discount for repeated matches
-	const int MAX_MATCH_BENEFIT = 16;    // Maximum benefit from a single match
+	const float MATCH_OVERHEAD = 3.0f;     // Bytes needed to encode match length/distance
+	const float LITERAL_OVERHEAD = 0.1f;   // Small overhead for literal runs
+	const float MTF_DISCOUNT = 0.85f;      // Discount factor for recently used values
+	const float REPEAT_DISCOUNT = 0.7f;    // Additional discount for repeated matches
+	const int MAX_MATCH_BENEFIT = 16;      // Maximum benefit from a single match
+	const float GRADIENT_THRESHOLD = 4.0f; // Threshold for enabling literal cost calculation
 
 	float cost = 0.0f;
 
@@ -407,22 +408,18 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 	}
 
 	// Calculate costs for matched portions
-	// TODO/Fixme: this should be here, but its making things worse! unsure why.
-	/*
 	if (mtf_value_1 == -1)
 	{
-	    float literal_cost = histo_cost(histogram, literal_value, mask_1);
-	    int literal_bytes = 0;
-	    for (int i = 0; i < 16; i++)
-	    {
-	        if (mask_1.get_byte(i))
-	            literal_bytes++;
-	    }
-	    cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
+		float literal_cost = histo_cost(histogram, literal_value, mask_1);
+		int literal_bytes = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			if (mask_1.get_byte(i))
+				literal_bytes++;
+		}
+		cost += literal_cost + LITERAL_OVERHEAD * literal_bytes;
 	}
 	else
-	*/
-	if (mtf_value_1 != -1)
 	{
 		// Base cost for match encoding
 		float match_cost = MATCH_OVERHEAD;
@@ -510,7 +507,7 @@ static float calculate_bit_cost_zip(int mtf_value_1, int mtf_value_2, const Int1
 	return cost;
 }
 
-static float calculate_bit_cost_lzma(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
+static float calculate_bit_cost_lzma(int mtf_value_1, int mtf_value_2, const Int128& literal_value, Mtf* mtf_1, Mtf* mtf_2, const Int128& mask_1, const Int128& mask_2, Histo* histogram, const float* gradients)
 {
 	const float LITERAL_CONTEXT_BITS = 0.5f;        // Cost for literal context modeling
 	const float CONSECUTIVE_MATCH_DISCOUNT = 0.8f;  // Cheaper to encode consecutive matches
@@ -551,11 +548,11 @@ static float calculate_bit_cost_lzma(int mtf_value_1, int mtf_value_2, const Int
 
 		for (int i = 0; i < 16; i++)
 		{
-			if (mask_1.get_byte(i))
-			{
-				cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
-				prev_byte = literal_value.get_byte(i);
-			}
+		    if (mask_1.get_byte(i))
+		    {
+		        cost += LITERAL_CONTEXT_BITS * (1.0f - log2_fast(histogram->h[prev_byte] + 1.f) / 8.0f);
+		        prev_byte = literal_value.get_byte(i);
+		    }
 		}
 		cost += literal_cost;
 		*/
@@ -592,22 +589,22 @@ static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* i
 	for (i = 0; i < total - 15; i += 16)
 	{
 		vfloat4 diff = int_to_float(vint4(img1 + i)) - int_to_float(vint4(img2 + i));
-		sum0 += diff * diff * weights[i >> 2];
+		sum0 += diff * diff * weights[i];
 
 		diff = int_to_float(vint4(img1 + i + 4)) - int_to_float(vint4(img2 + i + 4));
-		sum1 += diff * diff * weights[(i >> 2) + 1];
+		sum1 += diff * diff * weights[i + 4];
 
 		diff = int_to_float(vint4(img1 + i + 8)) - int_to_float(vint4(img2 + i + 8));
-		sum2 += diff * diff * weights[(i >> 2) + 2];
+		sum2 += diff * diff * weights[i + 8];
 
 		diff = int_to_float(vint4(img1 + i + 12)) - int_to_float(vint4(img2 + i + 12));
-		sum3 += diff * diff * weights[(i >> 2) + 3];
+		sum3 += diff * diff * weights[i + 12];
 	}
 
 	for (; i < total; i += 4)
 	{
 		vfloat4 diff = int_to_float(vint4(img1 + i)) - int_to_float(vint4(img2 + i));
-		sum0 += diff * diff * weights[i >> 2];
+		sum0 += diff * diff * weights[i];
 	}
 
 	return dot_s((sum0 + sum1 + sum2 + sum3), channel_weights);
@@ -621,22 +618,22 @@ static inline float calculate_mrsse_weighted(const float* img1, const float* img
 	for (i = 0; i < total - 15; i += 16)
 	{
 		vfloat4 diff = vfloat4(img1 + i) - vfloat4(img2 + i);
-		sum0 += diff * diff * weights[i >> 2];
+		sum0 += diff * diff * weights[i];
 
 		diff = vfloat4(img1 + i + 4) - vfloat4(img2 + i + 4);
-		sum1 += diff * diff * weights[(i >> 2) + 1];
+		sum1 += diff * diff * weights[i + 4];
 
 		diff = vfloat4(img1 + i + 8) - vfloat4(img2 + i + 8);
-		sum2 += diff * diff * weights[(i >> 2) + 2];
+		sum2 += diff * diff * weights[i + 8];
 
 		diff = vfloat4(img1 + i + 12) - vfloat4(img2 + i + 12);
-		sum3 += diff * diff * weights[(i >> 2) + 3];
+		sum3 += diff * diff * weights[i + 12];
 	}
 
 	for (; i < total; i += 4)
 	{
 		vfloat4 diff = vfloat4(img1 + i) - vfloat4(img2 + i);
-		sum0 += diff * diff * weights[i >> 2];
+		sum0 += diff * diff * weights[i];
 	}
 
 	// Combine all sums, apply channel weights, and scale by 256.0f
@@ -1414,6 +1411,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			calculate_masks(current_weight_bits, weights_mask, endpoints_mask);
 
 			uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
+			const float* gradients = all_gradients + block_index * (block_width * block_height * block_depth * 4);
 
 			// Function to get or compute MSE for a candidate
 			auto get_or_compute_mse = [&](const Int128& candidate_bits) -> float
@@ -1426,9 +1424,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					// Compute MSE using cached decoded data
 					if (block_type == ASTCENC_TYPE_U8)
 					{
-						return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+						return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
 					}
-					return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+					return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
 				}
 
 				// If not in cache, compute and cache the result
@@ -1442,9 +1440,9 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 				if (block_type == ASTCENC_TYPE_U8)
 				{
-					return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+					return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
 				}
-				return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, all_gradients, channel_weights);
+				return calculate_mrsse_weighted((float*)original_decoded, (float*)block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
 			};
 
 			// Decode the original block to compute initial MSE
@@ -1456,7 +1454,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			// Before computing best_rd_cost, get the propagated error
 			RDError propagated = error_buffer[block_index];
 			float adjusted_mse = original_mse + propagated.mse_error;
-			float adjusted_rate = MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+			float adjusted_rate = MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 			adjusted_rate += propagated.rate_error;
 
 			float best_rd_cost = adjusted_mse + lambda * adjusted_rate;
@@ -1497,8 +1495,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			};
 
 			// Add the current block to the candidates
-			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_weights_pos);
-			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram), mtf_endpoints_pos);
+			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients), mtf_weights_pos);
+			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients), mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
 			BitsAndWeightBits ref1_wb = get_bits_and_weight_bits(ref1 + block_index * block_size, weight_bits_tbl);
@@ -1509,8 +1507,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
-			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
-			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
+			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram, gradients), mtf_weights_pos_ref1);
+			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, &mtf_weights, &mtf_endpoints, ref1_weight_mask, ref1_endpoint_mask, &histogram, gradients), mtf_endpoints_pos_ref1);
 
 			// Add ref2
 			BitsAndWeightBits ref2_wb = get_bits_and_weight_bits(ref2 + block_index * block_size, weight_bits_tbl);
@@ -1521,8 +1519,8 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
-			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
-			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
+			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram, gradients), mtf_weights_pos_ref2);
+			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, &mtf_weights, &mtf_endpoints, ref2_weight_mask, ref2_endpoint_mask, &histogram, gradients), mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
 			for (int k = 0; k < mtf_endpoints.size; k++)
@@ -1538,7 +1536,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 				// Find the corresponding weight position
 				int weight_pos = mtf_search(&mtf_weights, candidate_endpoints, weights_mask);
 
-				float bit_cost = MEASURE_RATE(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				float bit_cost = MEASURE_RATE(weight_pos, k, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_endpoints if it's one of the best candidates
@@ -1546,11 +1544,11 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 #if 0 // Worse results... TODO/Fixme
 				uint8_t temp_block[16];
-				optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, all_gradients, channel_weights);
+				optimize_weights_for_endpoints(*bsd, (uint8_t*)&candidate_endpoints, temp_block, original_decoded, block_width, block_height, block_depth, block_type, gradients, channel_weights);
 
 				float mse2 = get_or_compute_mse(Int128(temp_block));
 				int weight_pos2 = mtf_search(&mtf_weights, Int128(temp_block), weights_mask);
-				float bit_cost2 = MEASURE_RATE(weight_pos2, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+				float bit_cost2 = MEASURE_RATE(weight_pos2, k, Int128(temp_block), &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 				float rd_cost2 = mse2 + lambda * bit_cost2;
 
 				add_candidate(best_endpoints, endpoints_count, Int128(temp_block), rd_cost2, k);
@@ -1575,7 +1573,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 					{
 						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
 						float mse = get_or_compute_mse(combined_bits);
-						float bit_cost = MEASURE_RATE(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+						float bit_cost = MEASURE_RATE(k, best_endpoints[m].mtf_position, combined_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 						float rd_cost = mse + lambda * bit_cost;
 
 						// Insert into best_weights if it's one of the best candidates
@@ -1596,7 +1594,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					// Try candidate_endpoints as-is first
 					float mse = get_or_compute_mse(candidate_endpoints);
-					float rd_cost = mse + lambda * MEASURE_RATE(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					float rd_cost = mse + lambda * MEASURE_RATE(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = candidate_endpoints;
@@ -1607,7 +1605,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					mse = get_or_compute_mse(temp_bits);
-					rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
@@ -1621,7 +1619,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 					temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
 					mse = get_or_compute_mse(temp_bits);
-					rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram);
+					rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, &mtf_weights, &mtf_endpoints, weights_mask, endpoints_mask, &histogram, gradients);
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = temp_bits;
@@ -1653,7 +1651,7 @@ static void dual_mtf_pass(uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t da
 
 			// After finding the best match, propagate the error
 			float final_mse = get_or_compute_mse(best_match);
-			float final_rate = MEASURE_RATE(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, &mtf_weights, &mtf_endpoints, best_weights_mask, best_endpoints_mask, &histogram);
+			float final_rate = MEASURE_RATE(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, &mtf_weights, &mtf_endpoints, best_weights_mask, best_endpoints_mask, &histogram, gradients);
 
 			float mse_diff = final_mse - adjusted_mse;
 			float rate_diff = final_rate - adjusted_rate;
@@ -1900,7 +1898,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	// Map x |-> C1/(C2 + sqrt(x))
 	float C1 = 256.0f;
 	float C2 = 1.0f;
-	float activity_scalar = 3.0f;
+	float activity_scalar = 4.0f;
 	for (size_t i = 0; i < pixel_count; i++)
 	{
 		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
@@ -1909,6 +1907,63 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 
 	free(blurred);
 	free(squared_diff);
+}
+
+static void high_pass_to_block_gradients(const float* high_pass_image, float* block_gradients, int width, int height, int depth, int block_width, int block_height, int block_depth)
+{
+	int blocks_x = (width + block_width - 1) / block_width;
+	int blocks_y = (height + block_height - 1) / block_height;
+	int blocks_z = (depth + block_depth - 1) / block_depth;
+
+	// For each block
+	for (int z = 0; z < blocks_z; z++)
+	{
+		for (int y = 0; y < blocks_y; y++)
+		{
+			for (int x = 0; x < blocks_x; x++)
+			{
+				int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
+				float* block_data = block_gradients + block_index * block_width * block_height * block_depth * 4;
+
+				// For each texel in the block
+				for (int bz = 0; bz < block_depth; bz++)
+				{
+					for (int by = 0; by < block_height; by++)
+					{
+						for (int bx = 0; bx < block_width; bx++)
+						{
+							int image_x = x * block_width + bx;
+							int image_y = y * block_height + by;
+							int image_z = z * block_depth + bz;
+
+							// Handle edge cases where block extends beyond image bounds
+							if (image_x < width && image_y < height && image_z < depth)
+							{
+								int image_index = (image_z * height * width + image_y * width + image_x);
+								int block_texel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
+
+								// Copy high-pass value to all 4 channels of block gradients
+								float gradient = high_pass_image[image_index];
+								block_data[block_texel_index + 0] = gradient;
+								block_data[block_texel_index + 1] = gradient;
+								block_data[block_texel_index + 2] = gradient;
+								block_data[block_texel_index + 3] = gradient;
+							}
+							else
+							{
+								// For texels outside image bounds, use zero gradient
+								int block_texel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
+								block_data[block_texel_index + 0] = 0.0f;
+								block_data[block_texel_index + 1] = 0.0f;
+								block_data[block_texel_index + 2] = 0.0f;
+								block_data[block_texel_index + 3] = 0.0f;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, vfloat4 channel_weights)
@@ -1924,15 +1979,15 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 
 	// Map lambda from [10, 40] to ...
 	float lambda_0 = 0.0f;
-	float lambda_5 = 0.125f;
-	float lambda_10 = 0.225f;
-	float lambda_40 = 0.725f;
+	float lambda_5 = 1.5f;
+	float lambda_10 = 3.25f;
+	float lambda_40 = 7.0f;
 	if (MEASURE_RATE == calculate_bit_cost_lzma)
 	{
 		lambda_0 = 0.0f;
-		lambda_5 = 0.175f;
-		lambda_10 = 0.3f;
-		lambda_40 = 0.9f;
+		lambda_5 = 1.75f;
+		lambda_10 = 3.f;
+		lambda_40 = 9.f;
 	}
 
 	if (lambda <= 0.0f)
@@ -1988,6 +2043,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	size_t image_size = width * height * depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
 	uint8_t* reconstructed_image = (uint8_t*)malloc(image_size);
 	float* high_pass_image = (float*)malloc(width * height * depth * sizeof(float)); // Single channel
+	float* block_gradients = (float*)malloc(num_blocks * block_width * block_height * block_depth * 4 * sizeof(float));
 
 	if (block_type == ASTCENC_TYPE_U8)
 	{
@@ -2006,8 +2062,11 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 		high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights);
 	}
 
-	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image, channel_weights);
-	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, high_pass_image, channel_weights);
+	// Convert high-pass filtered image back to block gradients
+	high_pass_to_block_gradients(high_pass_image, block_gradients, width, height, depth, block_width, block_height, block_depth);
+
+	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
+	dual_mtf_pass(data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights);
 
 	// Clean up
 	free(bsd);
@@ -2015,4 +2074,5 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	free(original_blocks);
 	free(reconstructed_image);
 	free(high_pass_image);
+	free(block_gradients);
 }
