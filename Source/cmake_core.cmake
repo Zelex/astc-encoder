@@ -63,7 +63,8 @@ add_library(${ASTCENC_TARGET}-static
         astcenc_quantization.cpp
         astcenc_symbolic_physical.cpp
         astcenc_weight_align.cpp
-        astcenc_weight_quant_xfer_tables.cpp)
+        astcenc_weight_quant_xfer_tables.cpp
+        astcenc_lz_optimize.cpp)
 
 target_include_directories(${ASTCENC_TARGET}-static
     PUBLIC
@@ -94,7 +95,8 @@ if(${ASTCENC_SHAREDLIB})
             astcenc_quantization.cpp
             astcenc_symbolic_physical.cpp
             astcenc_weight_align.cpp
-            astcenc_weight_quant_xfer_tables.cpp)
+            astcenc_weight_quant_xfer_tables.cpp
+            astcenc_lz_optimize.cpp)
 
     target_include_directories(${ASTCENC_TARGET}-shared
         PUBLIC
@@ -114,7 +116,6 @@ if(${ASTCENC_CLI})
         astcenccli_entry2.cpp)
 
     add_executable(${ASTCENC_TARGET}
-        astcenccli_lz_optimize.cpp
         astcenccli_error_metrics.cpp
         astcenccli_image.cpp
         astcenccli_image_external.cpp

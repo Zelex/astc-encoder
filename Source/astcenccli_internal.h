@@ -425,36 +425,5 @@ int astcenc_main(
 	int argc,
 	char **argv);
 
-/**
- * @brief Optimize compressed data for better LZ compression.
- *
- * @param data          The compressed image data.
- * @param exhaustive_data The exhaustive compressed image data.
- * @param data_len      The length of the compressed data.
- * @param blocks_x      The number of blocks in the x dimension.
- * @param blocks_y      The number of blocks in the y dimension.
- * @param blocks_z      The number of blocks in the z dimension.
- * @param block_width    The width of each compressed block.
- * @param block_height   The height of each compressed block.
- * @param block_depth    The depth of each compressed block.
- * @param block_type    The type of each compressed block.
- * @param channel_weights The channel weights for the image.
- * @param config          The CLI configuration options.
- */
-void optimize_for_lz(
-    uint8_t* data,
-    uint8_t* exhaustive_data,
-    size_t data_len,
-    int blocks_x,
-    int blocks_y,
-    int blocks_z,
-    int block_width,
-    int block_height,
-    int block_depth,
-    int block_type,
-	vfloat4 channel_weights,
-	cli_config_options *config
-);
-
 
 #endif
