@@ -1435,7 +1435,7 @@ void optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, i
 	float lambda_0 = 0.0f;
 	float lambda_5 = 2.5f;
 	float lambda_10 = 4.f;
-	float lambda_40 = 10.f;
+	float lambda_40 = 8.f;
 
 	if (lambda <= 0.0f)
 	{
