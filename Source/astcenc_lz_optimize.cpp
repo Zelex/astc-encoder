@@ -1098,6 +1098,11 @@ static void dual_mtf_pass(int thread_count, bool silentmode, uint8_t* data, uint
 				mtf_init(&mtf_weights, MAX_MTF_SIZE);
 				mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
 			}
+			else if (effort >= 5)
+			{
+				mtf_init(&mtf_weights, MTF_WEIGHTS_SIZE * 4);
+				mtf_init(&mtf_endpoints, MTF_ENDPOINTS_SIZE);
+			}
 			else
 			{
 				mtf_init(&mtf_weights, MTF_WEIGHTS_SIZE);
