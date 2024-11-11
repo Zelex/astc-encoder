@@ -465,7 +465,13 @@ R"(
        -rdo-lambda <lambda 0..100, 0 means default of 10>
            Optimize the compressed output for better LZ compression. This
            reorders the compressed blocks to improve compressibility, which
-           may be beneficial when further compressing the ASTC data.)"
+           may be beneficial when further compressing the ASTC data.
+
+       -rdo-effort <effort 0..9>
+           Control the amount of effort spent optimizing the compressed
+           output for LZ compression. Higher values will try more block
+           reorderings to find better compression, at the cost of longer
+           compression times.)"
 // This split in the literals is needed for Visual Studio; the compiler
 // will concatenate these two strings together ...
 R"(

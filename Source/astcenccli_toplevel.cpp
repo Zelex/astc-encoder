@@ -1198,6 +1198,16 @@ static int edit_astcenc_config(
 			cli_config.lz_optimize = true;
 			cli_config.lz_optimize_rdo = (float)atof(argv[argidx - 1]);
 		}
+		else if (!strcmp(argv[argidx], "-rdo-effort")) 
+		{
+			argidx += 2;
+			if (argidx > argc)
+			{
+				print_error("ERROR: -rdo-effort switch with no argument\n"); 
+				return 1;
+			}
+			cli_config.lz_optimize_effort = (float)atof(argv[argidx - 1]);
+		}
 		else // check others as well
 		{
 			print_error("ERROR: Argument '%s' not recognized\n", argv[argidx]);
@@ -2235,26 +2245,26 @@ int astcenc_main(
 		if (cli_config.lz_optimize)
 		{
 			// Prepare compression settings
-			astcenc_config exhaustive_config;
-			astcenc_context* exhaustive_context;
-			astcenc_config_init(ASTCENC_PRF_LDR, config.block_x, config.block_y, config.block_z, ASTCENC_PRE_EXHAUSTIVE, 0, &exhaustive_config);
-			astcenc_context_alloc(&exhaustive_config, cli_config.thread_count, &exhaustive_context);
+			astcenc_config thorough_config;
+			astcenc_context* thorough_context;
+			astcenc_config_init(ASTCENC_PRF_LDR, config.block_x, config.block_y, config.block_z, ASTCENC_PRE_THOROUGH, 0, &thorough_config);
+			astcenc_context_alloc(&thorough_config, cli_config.thread_count, &thorough_context);
 
 			buffer_exhaustive = new uint8_t[buffer_size];
-			work.context = exhaustive_context;
+			work.context = thorough_context;
 			work.data_out = buffer_exhaustive;
 
 			if (!cli_config.silentmode)
 			{
-				printf("Compressing with exhaustive configuration\n");
+				printf("Compressing with thorough configuration\n");
 			}
 
-			double start_exhaustive_time = get_time();
+			double start_thorough_time = get_time();
 			for (unsigned int i = 0; i < cli_config.repeat_count; i++)
 			{
 				if (cli_config.thread_count > 1)
 				{
-					launch_threads("Exhaustive Compression", cli_config.thread_count, compression_workload_runner, &work);
+					launch_threads("Thorough Compression", cli_config.thread_count, compression_workload_runner, &work);
 				}
 				else
 				{
@@ -2263,9 +2273,9 @@ int astcenc_main(
 						work.data_out, work.data_len, 0);
 				}
 
-				astcenc_compress_reset(exhaustive_context);
+				astcenc_compress_reset(thorough_context);
 			}
-			double total_exhaustive_time = get_time() - start_exhaustive_time;
+			double total_thorough_time = get_time() - start_thorough_time;
 
 			if (work.error != ASTCENC_SUCCESS)
 			{
@@ -2273,11 +2283,11 @@ int astcenc_main(
 				return 1;
 			}
 
-			astcenc_context_free(exhaustive_context);
+			astcenc_context_free(thorough_context);
 
 			if (!cli_config.silentmode)
 			{
-				printf("Exhaustive compression time: %8.4f s\n", total_exhaustive_time);
+				printf("Thorough compression time: %8.4f s\n", total_thorough_time);
 			}
 		}
 
@@ -2301,7 +2311,7 @@ int astcenc_main(
 			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
 			float channel_weights[4] = {config.cw_r_weight, config.cw_g_weight, config.cw_b_weight, config.cw_a_weight};
-			optimize_for_lz(buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo);
+			optimize_for_lz(buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo, cli_config.lz_optimize_effort);
 		}
 
 		// Clean up

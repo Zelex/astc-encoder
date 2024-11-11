@@ -874,23 +874,26 @@ ASTCENC_PUBLIC const char* astcenc_get_error_string(
  * @param block_depth    The depth of each compressed block.
  * @param block_type    The type of each compressed block.
  * @param channel_weights The channel weights for the image.
- * @param config          The CLI configuration options.
+ * @param silentmode      Whether to suppress output.
+ * @param lambda          The rate-distortion trade-off parameter.
+ * @param effort          The effort level for the optimization. 0-9
  */
 void optimize_for_lz(
-    uint8_t* data,
-    uint8_t* exhaustive_data,
-    size_t data_len,
-    int blocks_x,
-    int blocks_y,
-    int blocks_z,
-    int block_width,
-    int block_height,
-    int block_depth,
-    int block_type,
+	uint8_t* data,
+	uint8_t* exhaustive_data,
+	size_t data_len,
+	int blocks_x,
+	int blocks_y,
+	int blocks_z,
+	int block_width,
+	int block_height,
+	int block_depth,
+	int block_type,
 	float *channel_weights,
 	int thread_count, 
 	bool silentmode,
-	float lambda
+	float lambda,
+	float effort
 );
 
 #endif

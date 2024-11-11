@@ -100,6 +100,9 @@ struct cli_config_options
 
 	/** @brief The rate-distortion trade-off parameter for LZ optimization. */
 	float lz_optimize_rdo;
+
+	/** @brief The effort level for LZ optimization. */
+	float lz_optimize_effort;
 };
 
 /**
