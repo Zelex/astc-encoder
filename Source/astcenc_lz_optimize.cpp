@@ -19,6 +19,16 @@
 #include "astcenc_mathlib.h"
 #include "astcenc_vecmathlib.h"
 
+#define MAX_MTF_SIZE (256 + 64 + 16 + 3)
+// #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
+#define MTF_ENDPOINTS_SIZE (256 + 64 + 16 + 3)
+#define MTF_WEIGHTS_SIZE (8 + 3)
+#define CACHE_SIZE (0x10000) // Should be a power of 2 for efficient modulo operation
+#define BEST_CANDIDATES_COUNT (8)
+#define MAX_THREADS (128)
+#define MODE_MASK (0x7FF)
+#define MAX_BLOCKS_PER_ITEM (8192)
+#define MEASURE_RATE calculate_bit_cost_simple
 
 struct Int128
 {
@@ -114,17 +124,6 @@ struct Int128
 		return std::string(buffer);
 	}
 };
-
-#define MAX_MTF_SIZE (256 + 64 + 16 + 3)
-// #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
-#define MTF_ENDPOINTS_SIZE (256 + 64 + 16 + 3)
-#define MTF_WEIGHTS_SIZE (32 + 8 + 3)
-#define CACHE_SIZE (0x10000) // Should be a power of 2 for efficient modulo operation
-#define BEST_CANDIDATES_COUNT (8)
-#define MAX_THREADS (128)
-#define MODE_MASK (0x7FF)
-#define MAX_BLOCKS_PER_ITEM (8192)
-#define MEASURE_RATE calculate_bit_cost_simple
 
 struct Histo
 {
