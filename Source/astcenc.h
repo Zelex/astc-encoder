@@ -878,7 +878,7 @@ ASTCENC_PUBLIC const char* astcenc_get_error_string(
  * @param lambda          The rate-distortion trade-off parameter.
  * @param effort          The effort level for the optimization. 0-9
  */
-ASTCENC_PUBLIC void astcenc_optimize_for_lz(
+ASTCENC_PUBLIC astcenc_error astcenc_optimize_for_lz(
 	uint8_t* data,
 	uint8_t* exhaustive_data,
 	size_t data_len,
