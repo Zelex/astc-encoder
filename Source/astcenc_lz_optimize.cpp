@@ -22,32 +22,41 @@
 #define MAX_MTF_SIZE (256 + 64 + 16 + 3)
 // #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define MTF_ENDPOINTS_SIZE (256 + 64 + 16 + 3)
-#define MTF_WEIGHTS_SIZE (8 + 3)
-#define CACHE_SIZE (0x10000) // Should be a power of 2 for efficient modulo operation
+#define MTF_WEIGHTS_SIZE (16 + 3)
+// Cache size for block decompression results, should be power of 2
+#define CACHE_SIZE (0x10000)
+// Number of best candidates to consider for each block
 #define BEST_CANDIDATES_COUNT (8)
+// Maximum number of threads to use
 #define MAX_THREADS (128)
+// Mode mask for block types
 #define MODE_MASK (0x7FF)
+// Maximum number of blocks to process per worker thread item
 #define MAX_BLOCKS_PER_ITEM (8192)
-#define MEASURE_RATE calculate_bit_cost_simple
 
+// 128-bit integer structure for handling ASTC block data
+// Used to manipulate compressed ASTC blocks which are 128 bits (16 bytes) in size
 struct Int128
 {
 	union
 	{
-		uint64_t uint64[2];
-		uint32_t uint32[4];
-		uint8_t bytes[16];
+		uint64_t uint64[2]; // Access as two 64-bit integers
+		uint32_t uint32[4]; // Access as four 32-bit integers
+		uint8_t bytes[16];  // Access as 16 bytes
 	};
 
+	// Default constructor initializes to zero
 	Int128() : uint64()
 	{
 	}
 
+	// Constructor from raw byte data
 	explicit Int128(const uint8_t* data)
 	{
 		memcpy(bytes, data, 16);
 	}
 
+	// Left shift operation with bounds checking
 	Int128 shift_left(int shift) const
 	{
 		Int128 result;
@@ -72,6 +81,7 @@ struct Int128
 		return result;
 	}
 
+	// Bitwise AND operation
 	Int128 bitwise_and(const Int128& other) const
 	{
 		Int128 result;
@@ -80,6 +90,7 @@ struct Int128
 		return result;
 	}
 
+	// Bitwise OR operation
 	Int128 bitwise_or(const Int128& other) const
 	{
 		Int128 result;
@@ -88,11 +99,13 @@ struct Int128
 		return result;
 	}
 
+	// Equality check
 	bool is_equal(const Int128& other) const
 	{
 		return uint64[0] == other.uint64[0] && uint64[1] == other.uint64[1];
 	}
 
+	// Constructor from integer value
 	static Int128 from_int(long long val)
 	{
 		Int128 result;
@@ -101,6 +114,7 @@ struct Int128
 		return result;
 	}
 
+	// Subtraction operation
 	Int128 subtract(const Int128& other) const
 	{
 		Int128 result;
@@ -109,6 +123,7 @@ struct Int128
 		return result;
 	}
 
+	// Bitwise NOT operation
 	Int128 bitwise_not() const
 	{
 		Int128 result;
@@ -117,6 +132,7 @@ struct Int128
 		return result;
 	}
 
+	// Convert to string representation (for debugging)
 	std::string to_string() const
 	{
 		char buffer[33];
@@ -125,26 +141,59 @@ struct Int128
 	}
 };
 
+// Histogram structure for tracking byte frequencies in compressed data
+// Used for entropy coding and compression ratio estimation
 struct Histo
 {
-	int h[256];
-	int size;
+	int h[256]; // Frequency count for each byte
+	int size;   // Total count
 };
 
+// Move-To-Front (MTF) list structure for maintaining recently used values
+// Helps exploit temporal locality in the compressed data
 struct Mtf
 {
-	Int128 list[MAX_MTF_SIZE];
-	int size;
-	int max_size;
+	Int128 list[MAX_MTF_SIZE]; // List of recently used values
+	int size;                  // Current size
+	int max_size;              // Maximum size
 };
 
+// Cache entry for storing decoded block results
+// Reduces redundant decompression operations
 struct CachedBlock
 {
-	Int128 encoded;
+	Int128 encoded;                     // Encoded block data
 	uint8_t decoded[6 * 6 * 6 * 4 * 4]; // Max size for both U8 and float types
-	bool valid;
+	bool valid;                         // Validity flag
 };
 
+/*
+static void jo_write_tga(const char *filename, void *rgba, int width, int height, int numChannels, int bit_depth) {
+    FILE *fp = fopen(filename, "wb");
+    if(!fp) {
+        return;
+    }
+    // Header
+    fwrite("\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00", 12, 1, fp);
+    fwrite(&width, 2, 1, fp);
+    fwrite(&height, 2, 1, fp);
+    int bpc = (numChannels * bit_depth) | 0x2000; // N bits per pixel
+    int byte_depth = (bit_depth+7) / 8;
+    fwrite(&bpc, 2, 1, fp);
+    // Swap RGBA to BGRA if using 3 or more channels
+    int remap[4] = {numChannels >= 3 ? 2*byte_depth : 0, 1*byte_depth, numChannels >= 3 ? 0 : 2*byte_depth, 3*byte_depth};
+    char *s = (char *)rgba;
+    for(int i = 0; i < width*height; ++i) {
+        for(int j = 0; j < numChannels; ++j) {
+            fwrite(s + remap[j], byte_depth, 1, fp);
+        }
+        s += numChannels*byte_depth;
+    }
+    fclose(fp);
+}
+*/
+
+// Fast log2 approximation function
 static inline float log2_fast(float val)
 {
 	union
@@ -159,6 +208,8 @@ static inline float log2_fast(float val)
 	return log_2;
 }
 
+// Hash function for 128-bit values
+// Used for cache lookups and hash table operations
 static uint32_t hash_128(const Int128& value)
 {
 	// FNV-1a inspired constants for 64-bit operations
@@ -192,37 +243,43 @@ static uint32_t hash_128(const Int128& value)
 	return result;
 }
 
+// Reset histogram counts to zero
 static void histo_reset(Histo* h)
 {
 	memset(h->h, 0, sizeof(h->h));
 	h->size = 0;
 }
 
+// Update histogram with byte frequencies from masked value
 static void histo_update(Histo* h, const Int128& value, const Int128& mask)
 {
+	// Iterate over each byte in the 128-bit value
 	for (int i = 0; i < 16; i++)
 	{
 		uint8_t m = mask.bytes[i];
-		if (m)
+		if (m) // Only count bytes where the mask is non-zero
 		{
 			uint8_t byte = value.bytes[i];
-			h->h[byte]++;
-			h->size++;
+			h->h[byte]++; // Increment the count for this byte
+			h->size++;    // Increment the total count
 		}
 	}
 }
 
+// Calculate entropy-based cost for encoding a value with given mask
 static float histo_cost(Histo* h, Int128 value, Int128 mask)
 {
+	// Return 0 if mask is all zeros (nothing to encode)
 	if (mask.uint64[0] == 0 && mask.uint64[1] == 0)
 		return 0.0f;
 
-	float tlb = (float)h->size + 1.0f;
+	float tlb = (float)h->size + 1.0f; // Total bytes plus 1 for Laplace smoothing
 	float cost1 = 1.0f;
 	float cost2 = 1.0f;
 	float cost3 = 1.0f;
 	float cost4 = 1.0f;
 
+	// Process 4 bytes at a time for efficiency
 	for (int i = 0; i < 16; i += 4)
 	{
 		uint32_t m = mask.uint32[i >> 2];
@@ -230,38 +287,35 @@ static float histo_cost(Histo* h, Int128 value, Int128 mask)
 		if (m)
 		{
 			if (m & 0xFF)
-			{
 				cost1 *= tlb / (h->h[value.bytes[i]] + 1.0f);
-			}
 			if (m & 0xFF00)
-			{
 				cost2 *= tlb / (h->h[value.bytes[i + 1]] + 1.0f);
-			}
 			if (m & 0xFF0000)
-			{
 				cost3 *= tlb / (h->h[value.bytes[i + 2]] + 1.0f);
-			}
 			if (m & 0xFF000000)
-			{
 				cost4 *= tlb / (h->h[value.bytes[i + 3]] + 1.0f);
-			}
 		}
 	}
 
+	// Combine the costs and take the log2
 	return log2_fast((cost1 * cost2) * (cost3 * cost4));
 }
 
+// Initialize Move-To-Front list with given maximum size
 static void mtf_init(Mtf* mtf, int max_size)
 {
 	mtf->size = 0;
 	mtf->max_size = max_size > MAX_MTF_SIZE ? MAX_MTF_SIZE : max_size;
 }
 
+// Search for a masked value in the MTF list
+// Returns position if found, -1 if not found
 static int mtf_search(Mtf* mtf, const Int128& value, const Int128& mask)
 {
-	// Pre-compute the masked value once
+	// Pre-compute the masked value once for efficiency
 	Int128 masked_value = value.bitwise_and(mask);
 
+	// Search in groups of 4 for better performance
 	int i = 0;
 	for (; i + 3 < mtf->size; i += 4)
 	{
@@ -287,20 +341,25 @@ static int mtf_search(Mtf* mtf, const Int128& value, const Int128& mask)
 			return i;
 	}
 
-	return -1;
+	return -1; // Not found
 }
 
+// Encode a value using Move-To-Front coding
+// Returns the position where the value was found or inserted
 static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 {
+	// Search for the value in the list
 	int pos = mtf_search(mtf, value, mask);
 
 	if (pos == -1)
 	{
+		// If not found, insert at the end
 		if (mtf->size < mtf->max_size)
 			mtf->size++;
 		pos = mtf->size - 1;
 	}
 
+	// Move the found value to the front of the list
 	for (int i = pos; i > 0; i--)
 		mtf->list[i] = mtf->list[i - 1];
 	mtf->list[0] = value;
@@ -308,69 +367,101 @@ static int mtf_encode(Mtf* mtf, const Int128& value, const Int128& mask)
 	return pos;
 }
 
-static float calculate_bit_cost_simple(int mtf_value_1, int mtf_value_2, const Int128& literal_value, const Int128& mask_1, const Int128& mask_2, Histo* histogram)
+// Calculate bit cost for encoding using MTF and literal values
+static float calculate_bit_cost_simple(int mtf_value_1,             // Position in first MTF list (or -1 if not found)
+                                       int mtf_value_2,             // Position in second MTF list (or -1 if not found)
+                                       const Int128& literal_value, // Actual value to encode
+                                       const Int128& mask_1,        // Mask for first MTF list
+                                       const Int128& mask_2,        // Mask for second MTF list
+                                       Histo* histogram             // Histogram for entropy coding
+)
 {
+	// Case 1: Both parts need literal encoding
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
-	{
 		return histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
-	}
 
+	// Case 2: first part needs literal encoding
 	if (mtf_value_1 == -1)
-	{
 		return histo_cost(histogram, literal_value, mask_1) + log2_fast(mtf_value_2 + 1.0f);
-	}
 
+	// Case 3: second part needs literal encoding
 	if (mtf_value_2 == -1)
-	{
 		return log2_fast(mtf_value_1 + 1.0f) + histo_cost(histogram, literal_value, mask_2);
-	}
 
+	// Case 4: Both parts can use MTF encoding
 	return log2_fast(mtf_value_1 + 1.0f) + log2_fast(mtf_value_2 + 1.0f);
 }
 
-static inline float calculate_ssd_weighted(const uint8_t* img1, const uint8_t* img2, int total, const float* weights, const vfloat4& channel_weights)
+// Calculate Sum of Squared Differences (SSD) with weights for U8 image data
+static inline float calculate_ssd_weighted(const uint8_t* img1,           // first image data
+                                           const uint8_t* img2,           // second image data
+                                           int total,                     // total number of pixels * 4 (RGBA)
+                                           const float* weights,          // Per-pixel weights
+                                           const vfloat4& channel_weights // Per-channel importance weights
+)
 {
-	vfloat4 sum0 = vfloat4::zero(), sum1 = vfloat4::zero(), sum2 = vfloat4::zero(), sum3 = vfloat4::zero();
+	// Initialize accumulator vectors for SIMD processing
+	vfloat4 sum0 = vfloat4::zero(), sum1 = vfloat4::zero();
+	vfloat4 sum2 = vfloat4::zero(), sum3 = vfloat4::zero();
 
+	// Process 16 pixels (64 bytes) at a time using SIMD
 	int i;
 	for (i = 0; i < total - 15; i += 16)
 	{
+		// Load and compute differences for 4 pixels at a time
 		vfloat4 diff0 = int_to_float(vint4(img1 + i)) - int_to_float(vint4(img2 + i));
 		vfloat4 diff1 = int_to_float(vint4(img1 + i + 4)) - int_to_float(vint4(img2 + i + 4));
 		vfloat4 diff2 = int_to_float(vint4(img1 + i + 8)) - int_to_float(vint4(img2 + i + 8));
 		vfloat4 diff3 = int_to_float(vint4(img1 + i + 12)) - int_to_float(vint4(img2 + i + 12));
+
+		// Square differences and multiply by weights
 		sum0 += diff0 * diff0 * vfloat4(weights + i);
 		sum1 += diff1 * diff1 * vfloat4(weights + i + 4);
 		sum2 += diff2 * diff2 * vfloat4(weights + i + 8);
 		sum3 += diff3 * diff3 * vfloat4(weights + i + 12);
 	}
 
+	// Process remaining pixels
 	for (; i < total; i += 4)
 	{
 		vfloat4 diff = int_to_float(vint4(img1 + i)) - int_to_float(vint4(img2 + i));
 		sum0 += diff * diff * weights[i];
 	}
 
+	// Combine all sums, apply channel weights
 	return dot_s(((sum0 + sum1) + (sum2 + sum3)), channel_weights);
 }
 
-static inline float calculate_mrsse_weighted(const float* img1, const float* img2, int total, const float* weights, const vfloat4& channel_weights)
+// Calculate Mean Relative Squared Signal Error (MRSSE) with weights for float image data
+static inline float calculate_mrsse_weighted(const float* img1,             // first image data
+                                             const float* img2,             // second image data
+                                             int total,                     // total number of pixels * 4 (RGBA)
+                                             const float* weights,          // Per-pixel weights
+                                             const vfloat4& channel_weights // Per-channel importance weights
+)
 {
-	vfloat4 sum0 = vfloat4::zero(), sum1 = vfloat4::zero(), sum2 = vfloat4::zero(), sum3 = vfloat4::zero();
+	// Initialize accumulator vectors for SIMD processing
+	vfloat4 sum0 = vfloat4::zero(), sum1 = vfloat4::zero();
+	vfloat4 sum2 = vfloat4::zero(), sum3 = vfloat4::zero();
 
+	// Process 16 pixels (64 bytes) at a time using SIMD
 	int i;
 	for (i = 0; i < total - 15; i += 16)
 	{
+		// Load and compute differences for 4 pixels at a time
 		vfloat4 diff0 = vfloat4(img1 + i) - vfloat4(img2 + i);
 		vfloat4 diff1 = vfloat4(img1 + i + 4) - vfloat4(img2 + i + 4);
 		vfloat4 diff2 = vfloat4(img1 + i + 8) - vfloat4(img2 + i + 8);
 		vfloat4 diff3 = vfloat4(img1 + i + 12) - vfloat4(img2 + i + 12);
+
+		// Square differences and multiply by weights
 		sum0 += diff0 * diff0 * vfloat4(weights + i);
 		sum1 += diff1 * diff1 * vfloat4(weights + i + 4);
 		sum2 += diff2 * diff2 * vfloat4(weights + i + 8);
 		sum3 += diff3 * diff3 * vfloat4(weights + i + 12);
 	}
 
+	// Process remaining pixels
 	for (; i < total; i += 4)
 	{
 		vfloat4 diff = vfloat4(img1 + i) - vfloat4(img2 + i);
@@ -381,8 +472,17 @@ static inline float calculate_mrsse_weighted(const float* img1, const float* img
 	return dot_s(((sum0 + sum1) + (sum2 + sum3)), channel_weights) * 256.0f;
 }
 
-static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_t* block_ptr, uint8_t* output, int block_width, int block_height, int block_depth, int block_type)
+// Decompress an ASTC block to either U8 or float output
+static void astc_decompress_block(const block_size_descriptor& bsd, // Block size descriptor
+                                  const uint8_t* block_ptr,         // Block data pointer
+                                  uint8_t* output,                  // Output buffer
+                                  int block_width,                  // Block dimensions
+                                  int block_height,
+                                  int block_depth,
+                                  int block_type // Block type (ASTCENC_TYPE_U8 or ASTCENC_TYPE_F32)
+)
 {
+	// Initialize image block structure
 	image_block blk{};
 	blk.texel_count = static_cast<uint8_t>(block_width * block_height * block_depth);
 	blk.data_min = vfloat4::zero();
@@ -392,27 +492,35 @@ static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_
 	blk.ypos = 0;
 	blk.zpos = 0;
 
+	// Convert physical block to symbolic representation
 	symbolic_compressed_block scb;
 	physical_to_symbolic(bsd, block_ptr, scb);
 
+	// Determine profile based on block type
 	astcenc_profile profile = block_type == ASTCENC_TYPE_U8 ? ASTCENC_PRF_LDR : ASTCENC_PRF_HDR;
+
+	// Decompress symbolic block
 	decompress_symbolic_block(profile, bsd, 0, 0, 0, scb, blk);
 
 	// Convert the decompressed data to the output format
 	if (block_type == ASTCENC_TYPE_U8)
 	{
+		// convert to 8-bit RGBA
 		for (int i = 0; i < blk.texel_count; i += ASTCENC_SIMD_WIDTH)
 		{
+			// Load RGBA components
 			vfloat r = vfloat(blk.data_r + i);
 			vfloat g = vfloat(blk.data_g + i);
 			vfloat b = vfloat(blk.data_b + i);
 			vfloat a = vfloat(blk.data_a + i);
 
+			// Clamp to [0,1] and convert to 8-bit
 			vint ri = float_to_int_rtn(min(r, 1.0f) * 255.0f);
 			vint gi = float_to_int_rtn(min(g, 1.0f) * 255.0f);
 			vint bi = float_to_int_rtn(min(b, 1.0f) * 255.0f);
 			vint ai = float_to_int_rtn(min(a, 1.0f) * 255.0f);
 
+			// Interleave and store the results
 			vint rgbai = interleave_rgba8(ri, gi, bi, ai);
 			unsigned int used_texels = astc::min(blk.texel_count - i, ASTCENC_SIMD_WIDTH);
 			store_lanes_masked(output + i * 4, rgbai, vint::lane_id() < vint(used_texels));
@@ -420,10 +528,10 @@ static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_
 	}
 	else
 	{
+		// Store as 32-bit float RGBA
 		for (int i = 0; i < blk.texel_count; i++)
 		{
 			vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
-			// Store as 32-bit float
 			float* output_f = reinterpret_cast<float*>(output);
 			output_f[i * 4 + 0] = color.lane<0>();
 			output_f[i * 4 + 1] = color.lane<1>();
@@ -433,35 +541,44 @@ static void astc_decompress_block(const block_size_descriptor& bsd, const uint8_
 	}
 }
 
+// Get the number of bits used for weights in an ASTC block
 int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_depth)
 {
+	// Extract block mode from first two bytes
 	uint16_t mode = data[0] | (data[1] << 8);
 
+	// Check for special block types
 	if ((mode & 0x1ff) == 0x1fc)
-		return 0; // void-extent
+		return 0; // void-extent block
 	if ((mode & 0x00f) == 0)
-		return 0; // Reserved
+		return 0; // Reserved block mode
 
-	uint8_t b01 = (mode >> 0) & 3;
-	uint8_t b23 = (mode >> 2) & 3;
-	uint8_t p0 = (mode >> 4) & 1;
-	uint8_t b56 = (mode >> 5) & 3;
-	uint8_t b78 = (mode >> 7) & 3;
-	uint8_t P = (mode >> 9) & 1;
-	uint8_t Dp = (mode >> 10) & 1;
-	uint8_t b9_10 = (mode >> 9) & 3;
+	// Extract individual bits from the mode
+	uint8_t b01 = (mode >> 0) & 3;   // Bits 0-1
+	uint8_t b23 = (mode >> 2) & 3;   // Bits 2-3
+	uint8_t p0 = (mode >> 4) & 1;    // Bit 4
+	uint8_t b56 = (mode >> 5) & 3;   // Bits 5-6
+	uint8_t b78 = (mode >> 7) & 3;   // Bits 7-8
+	uint8_t P = (mode >> 9) & 1;     // Bit 9
+	uint8_t Dp = (mode >> 10) & 1;   // Bit 10
+	uint8_t b9_10 = (mode >> 9) & 3; // Bits 9-10
 	uint8_t p12;
 
+	// Variables for block dimensions
 	int W = 0, H = 0, D = 0;
+
+	// Handle 2D blocks
 	if (block_depth <= 1)
 	{
 		// 2D
 		D = 1;
 		if ((mode & 0x1c3) == 0x1c3)
 			return 0; // Reserved*
+
 		if (b01 == 0)
 		{
 			p12 = b23;
+			// Determine block dimensions based on mode bits
 			switch (b78)
 			{
 			case 0:
@@ -501,6 +618,7 @@ int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_
 		else
 		{
 			p12 = b01;
+			// Alternative block dimensions calculations
 			switch (b23)
 			{
 			case 0:
@@ -532,12 +650,13 @@ int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_
 	}
 	else
 	{
-		// 3D
+		// Handle 3D blocks
 		if ((mode & 0x1e3) == 0x1e3)
 			return 0; // Reserved*
 		if (b01 != 0)
 		{
 			p12 = b01;
+			// 3D block dimensions
 			W = 2 + b56;
 			H = 2 + b78;
 			D = 2 + b23;
@@ -583,33 +702,34 @@ int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_
 				case 3:
 					/* NOTREACHED*/
 					assert(0);
-					return 0;
+					return 0; // Invalid mode
 				}
 				break;
 			}
 		}
 	}
-	// error cases
-	if (W > block_width)
-		return 0;
-	if (H > block_height)
-		return 0;
-	if (D > block_depth)
+
+	// Validate block dimensions
+	if (W > block_width || H > block_height || D > block_depth)
 		return 0;
 
+	// Calculate weight bits based on encoding parameters
 	uint8_t p = (p12 << 1) | p0;
 	int trits = 0, quints = 0, bits = 0;
+
 	if (!P)
 	{
-		int t[8] = {-1, -1, 0, 1, 0, 0, 1, 0};
-		int q[8] = {-1, -1, 0, 0, 0, 1, 0, 0};
-		int b[8] = {-1, -1, 1, 0, 2, 0, 1, 3};
+		// Non-packed mode weight bit patterns
+		int t[8] = {-1, -1, 0, 1, 0, 0, 1, 0}; // trit patterns
+		int q[8] = {-1, -1, 0, 0, 0, 1, 0, 0}; // quint patterns
+		int b[8] = {-1, -1, 1, 0, 2, 0, 1, 3}; // bit patterns
 		trits = t[p];
 		quints = q[p];
 		bits = b[p];
 	}
 	else
 	{
+		// Packed mode weight bit patterns
 		int t[8] = {-1, -1, 0, 1, 0, 0, 1, 0};
 		int q[8] = {-1, -1, 1, 0, 0, 1, 0, 0};
 		int b[8] = {-1, -1, 1, 2, 4, 2, 3, 5};
@@ -618,84 +738,130 @@ int get_weight_bits(uint8_t* data, int block_width, int block_height, int block_
 		bits = b[p];
 	}
 
+	// Calculate total number of weights
 	int num_weights = W * H * D;
 	if (Dp)
-		num_weights *= 2;
+		num_weights *= 2; // Dual plane mode doubles weights
 
+	// Check weight count limit
 	if (num_weights > 64)
 		return 0;
 
-	int weight_bits = (num_weights * 8 * trits + 4) / 5 + (num_weights * 7 * quints + 2) / 3 + num_weights * bits;
+	// Calculate total weight bits
+	int weight_bits = (num_weights * 8 * trits + 4) / 5 +  // Trit bits
+	                  (num_weights * 7 * quints + 2) / 3 + // Quint bits
+	                  num_weights * bits;                  // Plain bits
 
-	// error cases
+	// Check weight bit range
 	if (weight_bits < 24 || weight_bits > 96)
 		return 0;
 
 	return (uint8_t)weight_bits;
 }
 
-#if 0
+#if 0 // Debug/test code (disabled)
 extern int hack_bits_for_weights;
 void test_weight_bits(uint8_t* data, size_t data_len, int block_width, int block_height, int block_depth)
 {
+	// Allocate and initialize block size descriptor
     block_size_descriptor *bsd = (block_size_descriptor*) malloc(sizeof(*bsd));
     init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 1.0f, *bsd);
 
+	// Test each block
     for (size_t i=0; i < data_len; i += 16) 
     {
         uint8_t *block = data + i;
-        uint8_t decoded[6*6*6*4];
+        uint8_t decoded[6*6*6*4]; // buffer for decoded block
         astc_decompress_block(*bsd, block, decoded, block_width, block_height, block_depth, ASTCENC_TYPE_U8);
         int bits = get_weight_bits(block, block_width, block_height, block_depth);
 	    if (bits != hack_bits_for_weights) 
-        {
 		    printf("Internal error: decoded weight bits count didn't match\n");
-	    }
     }
     free(bsd);
 }
 #endif
 
+// Structure to define a work item for thread processing
 struct WorkItem
 {
-	size_t start_block;
-	size_t end_block;
-	bool is_forward;
+	size_t start_block; // Starting block index
+	size_t end_block;   // Ending block index ( exclusive )
+	bool is_forward;    // Forward or backward pass
 };
 
+// Calculate masks for weights and endpoints based on weight bits
 static inline void calculate_masks(int weight_bits, Int128& weights_mask, Int128& endpoints_mask)
 {
 	Int128 one = Int128::from_int(1);
+	// Create weight mask by shifting 1s into position
 	weights_mask = one.shift_left(weight_bits).subtract(one).shift_left(128 - weight_bits);
+	// Endpoints mask is complement of weights mask
 	endpoints_mask = weights_mask.bitwise_not();
 }
 
+// Get weight bits from a block using pre-computed lookup table
 static inline int get_weight_bits(const uint8_t* block, const uint8_t* weight_bits_tbl)
 {
 	return weight_bits_tbl[(block[0] | (block[1] << 8)) & MODE_MASK];
 }
 
+// Structure to track rate-distortion errors
 struct RDError
 {
-	float mse_error;
-	float rate_error;
+	float mse_error;  // Mean squared error component
+	float rate_error; // Rate (compression) error component
 };
 
-static void dual_mtf_pass(int thread_count, bool silentmode, uint8_t* data, uint8_t* ref1, uint8_t* ref2, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float lambda, block_size_descriptor* bsd, uint8_t* all_original_decoded, float* all_gradients, vfloat4 channel_weights, float effort)
+static inline uint32_t xorshift32(uint32_t& state)
 {
+	state ^= state << 13;
+	state ^= state >> 17;
+	state ^= state << 5;
+	return state;
+}
+
+// Performs forward and backwards optimization passes over blocks
+static void dual_mtf_pass(int thread_count, // Number of threads to use
+                          bool silentmode,  // Supress progress output
+                          uint8_t* data,    // Input/output compressed data
+                          uint8_t* ref1,    // Pointer to reference 1 data
+                          uint8_t* ref2,    // Pointer to reference 2 data
+                          size_t data_len,  // Length of input data
+                          int blocks_x,     // Block dimensions
+                          int blocks_y,
+                          int blocks_z,                  // Block dimensions
+                          int block_width,               // Block size
+                          int block_height,              // Block dimensions
+                          int block_depth,               // Block dimensions
+                          int block_type,                // ASTC block type
+                          float lambda,                  // Lambda parameter for rate-distortion optimization
+                          block_size_descriptor* bsd,    // Block size descriptor
+                          uint8_t* all_original_decoded, // Pointer to original decoded data
+                          float* all_gradients,          // Per-pixel weights
+                          vfloat4 channel_weights,       // Channel importance weights
+                          float effort                   // Optimization effort
+)
+{
+	// Uses multiple threads to process blocks
+	// Each thread maintains its own MTF lists and histogram
+	// Processes blocks in chunks, applying rate-distortion optimization
+
+	tmFunction(0, 0); // Timing/profiling marker
+
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
+	// Limit thread count to hardware, MAX_THREADS, and requested amount
 	const int num_threads = astc::min((int)thread_count, MAX_THREADS, (int)std::thread::hardware_concurrency());
+	// Allocate error buffer for all blocks
 	RDError* error_buffer = (RDError*)calloc(blocks_x * blocks_y * blocks_z, sizeof(RDError));
 
 	// Add progress tracking
 	std::atomic<size_t> blocks_processed{0};
 	size_t total_blocks = num_blocks;
 	if (effort >= 9)
-	{
 		total_blocks *= 2; // include backwards pass
-	}
 
+	// Lanmbda function to print progress bar
 	auto print_progress = [&blocks_processed, total_blocks, silentmode]()
 	{
 		// tmFunction(0, 0);
@@ -709,11 +875,11 @@ static void dual_mtf_pass(int thread_count, bool silentmode, uint8_t* data, uint
 
 		last_percentage = current_percentage;
 
-		const int bar_width = 50;
-		int pos = static_cast<int>(bar_width * progress);
-
+		// Draw progress bar if not in silent mode
 		if (!silentmode)
 		{
+			const int bar_width = 50;
+			int pos = static_cast<int>(bar_width * progress);
 			printf("\rOptimizing: [");
 			for (int i = 0; i < bar_width; ++i)
 			{
@@ -739,19 +905,64 @@ static void dual_mtf_pass(int thread_count, bool silentmode, uint8_t* data, uint
 		weight_bits_tbl[i] = (uint8_t)get_weight_bits(block, block_width, block_height, block_depth);
 	}
 
+	// Thread synchronization primitives
 	std::queue<WorkItem> work_queue;
 	std::mutex queue_mutex;
 	std::condition_variable cv;
 	bool all_work_done = false;
 
+	// Main thread worker function
 	auto thread_function = [&](int thread_id)
 	{
-		CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
-		Mtf mtf_weights;
-		Mtf mtf_endpoints;
-		Histo histogram;
+		tmProfileThread(0, 0, 0); // Thread profiling marker
+		tmZone(0, 0, "thread_function");
 
-		// Use shared error_buffer instead of thread-specific one
+		// Allocate thread-local resources
+		CachedBlock* block_cache = (CachedBlock*)calloc(CACHE_SIZE, sizeof(CachedBlock));
+		Mtf mtf_weights;   // MTF list for weights
+		Mtf mtf_endpoints; // MTF list for endpoints
+		Histo histogram;   // Histogram for encoding statistics
+
+		// Function to initialize MTF and histogram with random blocks
+		auto seed_structures = [&](Mtf& mtf_w, Mtf& mtf_e, Histo& hist, uint32_t seed, size_t start_block, size_t end_block)
+		{
+			uint32_t rng_state = seed + thread_id;
+
+			// Number of random blocks to sample
+			const int num_samples = 64;
+
+			// Reset structures
+			mtf_init(&mtf_w, mtf_w.max_size);
+			mtf_init(&mtf_e, mtf_e.max_size);
+			histo_reset(&hist);
+
+			// Calculate range size
+			size_t range_size = end_block - start_block;
+			if (range_size == 0)
+				return;
+
+			// Sample random blocks from within the work item range
+			for (int i = 0; i < num_samples; i++)
+			{
+				// Generate random block index within the work item range
+				size_t block_idx = start_block + (xorshift32(rng_state) % range_size);
+
+				// Get block data
+				Int128 block_bits(data + block_idx * 16);
+				int block_weight_bits = get_weight_bits(block_bits.bytes, weight_bits_tbl);
+
+				// Calculate masks
+				Int128 weights_mask, endpoints_mask;
+				calculate_masks(block_weight_bits, weights_mask, endpoints_mask);
+
+				// Update structures
+				mtf_encode(&mtf_w, block_bits, weights_mask);
+				mtf_encode(&mtf_e, block_bits, endpoints_mask);
+				histo_update(&hist, block_bits, weights_mask.bitwise_or(endpoints_mask));
+			}
+		};
+
+		// Error propagation function for rate-distortion optimization
 		auto propagate_error = [&](long long x, long long y, long long z, float mse_diff, float rate_diff, bool is_forward)
 		{
 			// Calculate the work group boundary
@@ -762,6 +973,14 @@ static void dual_mtf_pass(int thread_count, bool silentmode, uint8_t* data, uint
 			// Don't propagate if target block would be outside current work group
 			if (x < 0 || x >= blocks_x || y < 0 || y >= blocks_y || z < 0 || z >= blocks_z)
 				return;
+
+			// For 2D slices (block_depth == 1), don't propagate errors across Z boundaries
+			if (block_depth == 1) {
+				long long target_z = z;
+				long long current_z = current_block_idx / (blocks_x * blocks_y);
+				if (target_z != current_z) 
+					return;
+			}
 
 			long long block_idx = z * blocks_x * blocks_y + y * blocks_x + x;
 			if (block_idx < work_group_start || block_idx >= work_group_end)
@@ -1286,7 +1505,7 @@ static void apply_1d_convolution_3d(const T* input, T* output, int width, int he
 
 // Separable Gaussian blur for 3D images
 template <typename T>
-void gaussian_blur_3d(const T* input, T* output, int width, int height, int depth, int channels, float sigma)
+void gaussian_blur_3d(const T* input, T* output, int width, int height, int depth, int channels, float sigma, int block_depth)
 {
 	float kernel[MAX_KERNEL_SIZE];
 	int kernel_radius;
@@ -1301,8 +1520,8 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
 	// Y direction pass
 	apply_1d_convolution_3d(temp1, temp2, width, height, depth, channels, kernel, kernel_radius, 1);
 
-	// Z direction pass (only if depth > 1)
-	if (depth > 1)
+	// Z direction pass (only if depth > 1 AND block_depth > 1)
+	if (depth > 1 && block_depth > 1)
 	{
 		apply_1d_convolution_3d(temp2, output, width, height, depth, channels, kernel, kernel_radius, 2);
 	}
@@ -1316,7 +1535,7 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
 }
 
 template <typename T>
-void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, float sigma_highpass, float sigma_blur, const vfloat4& channel_weights)
+void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, float sigma_highpass, float sigma_blur, const vfloat4& channel_weights, int block_depth)
 {
 	(void)channel_weights;
 	size_t pixel_count = width * height * depth;
@@ -1325,7 +1544,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	float* squared_diff = (float*)malloc(pixel_count * sizeof(float));
 
 	// Apply initial Gaussian blur for high-pass filter
-	gaussian_blur_3d(input, blurred, width, height, depth, 4, sigma_highpass);
+	gaussian_blur_3d(input, blurred, width, height, depth, 4, sigma_highpass, block_depth);
 
 	// Calculate squared differences (combined across channels, using channel weights)
 	for (size_t i = 0; i < pixel_count; i++)
@@ -1344,7 +1563,7 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	}
 
 	// Apply second Gaussian blur to the squared differences
-	gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur);
+	gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur, block_depth);
 
 	// Map x |-> C1/(C2 + sqrt(x))
 	float C1 = 256.0f;
@@ -1366,7 +1585,7 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 	int blocks_y = (height + block_height - 1) / block_height;
 	int blocks_z = (depth + block_depth - 1) / block_depth;
 
-	// For each block
+	// For each block (for 2D slices, each z represents a separate slice)
 	for (int z = 0; z < blocks_z; z++)
 	{
 		for (int y = 0; y < blocks_y; y++)
@@ -1498,7 +1717,7 @@ astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, s
 		reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec);
+		high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
 	}
 	else
 	{
@@ -1506,7 +1725,7 @@ astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, s
 		reconstruct_image((float*)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float*)reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec);
+		high_pass_filter_squared_blurred((float*)reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
 	}
 
 	// Convert high-pass filtered image back to block gradients
