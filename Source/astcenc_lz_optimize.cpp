@@ -1,3 +1,27 @@
+/*
+This file implements a rate-distortion optimization algorithm for ASTC compressed textures.
+The algorithm aims to improve compression by exploiting redundancy between neighboring blocks
+while maintaining visual quality.
+
+The core approach uses Move-To-Front (MTF) coding and error diffusion to optimize both the
+weights and endpoints of ASTC blocks. It processes the image in both forward and backward
+passes, maintaining separate MTF lists for weights and endpoints. For each block, it:
+
+1. Analyzes the high-frequency content using a multi-scale approach to determine visually
+   important areas that need higher quality encoding
+2. Searches for similar blocks in the MTF lists that could provide better rate-distortion
+   tradeoffs
+3. Propagates quantization errors to neighboring blocks using an error diffusion filter
+4. Updates the MTF lists and statistics to adapt to local texture patterns
+
+The algorithm uses a lambda parameter to control the rate-distortion tradeoff - higher values
+favor better compression while lower values preserve more quality. It also supports different
+effort levels that control how exhaustively it searches for optimizations.
+
+The implementation is multi-threaded and includes optimizations like SIMD processing, block
+caching, and efficient bit manipulation to maintain good performance even at high effort
+levels.
+*/
 #include <immintrin.h> // For SSE intrinsics
 #include <math.h>
 #include <stdlib.h>
