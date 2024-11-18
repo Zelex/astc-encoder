@@ -19,6 +19,9 @@
 #include "astcenc_mathlib.h"
 #include "astcenc_vecmathlib.h"
 
+#include "ThirdParty/rad_tm_stub.h"
+
+// Maximum size for Move-To-Front (MTF) lists
 #define MAX_MTF_SIZE (256 + 64 + 16 + 3)
 // #define MAX_MTF_SIZE (1024 + 256 + 64 + 16 + 1)
 #define MTF_ENDPOINTS_SIZE (256 + 64 + 16 + 3)
@@ -975,10 +978,11 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 				return;
 
 			// For 2D slices (block_depth == 1), don't propagate errors across Z boundaries
-			if (block_depth == 1) {
+			if (block_depth == 1)
+			{
 				long long target_z = z;
 				long long current_z = current_block_idx / (blocks_x * blocks_y);
-				if (target_z != current_z) 
+				if (target_z != current_z)
 					return;
 			}
 
@@ -1035,18 +1039,31 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			}
 		};
 
+		// Process individual blocks within the thread
 		auto process_block = [&](size_t block_index, bool is_forward)
 		{
+			// Calculate block coordinates
 			size_t z = block_index / (blocks_x * blocks_y);
 			size_t rem = block_index % (blocks_x * blocks_y);
 			size_t y = rem / blocks_x;
 			size_t x = rem % blocks_x;
 
+			// Get current block data and compute its weight bits
 			uint8_t* current_block = data + block_index * block_size;
 			Int128 current_bits(current_block);
 			int current_weight_bits = get_weight_bits(current_bits.bytes, weight_bits_tbl);
 			Int128 best_match = current_bits;
 
+			// Don't process blocks with no weight bits, accept void-extent as is
+			if (current_weight_bits == 0)
+			{
+				histo_update(&histogram, current_bits, Int128::from_int(-1));
+				mtf_encode(&mtf_weights, current_bits, Int128::from_int(-1));
+				mtf_encode(&mtf_endpoints, current_bits, Int128::from_int(0));
+				return;
+			}
+
+			// Get pointers to original decoded data and gradients for this block
 			uint8_t* original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
 			const float* gradients = all_gradients + block_index * (block_width * block_height * block_depth * 4);
 
@@ -1083,6 +1100,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			// Decode the original block to compute initial MSE
 			float original_mse = get_or_compute_mse(current_bits);
 
+			// Calculate masks for weights and endpoints
 			Int128 current_weights_mask, current_endpoints_mask;
 			calculate_masks(current_weight_bits, current_weights_mask, current_endpoints_mask);
 			int mtf_weights_pos = mtf_search(&mtf_weights, current_bits, current_weights_mask);
@@ -1091,26 +1109,30 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			// Before computing best_rd_cost, get the propagated error
 			RDError propagated = error_buffer[block_index];
 			float adjusted_mse = original_mse + propagated.mse_error;
-			float adjusted_rate = MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, current_weights_mask, current_endpoints_mask, &histogram);
+			float adjusted_rate = calculate_bit_cost_simple(mtf_weights_pos, mtf_endpoints_pos, current_bits, current_weights_mask, current_endpoints_mask, &histogram);
 			adjusted_rate += propagated.rate_error;
 
+			// Calculate initial best RD cost
 			float best_rd_cost = adjusted_mse + lambda * adjusted_rate;
 
+			// Candidate structure for storing best candidates
 			struct Candidate
 			{
-				Int128 bits;
-				float rd_cost;
-				int mtf_position;
-				int mode;
-				int weight_bits;
+				Int128 bits;      // ASTC block data
+				float rd_cost;    // Rate-distortion cost
+				int mtf_position; // MTF position
+				int mode;         // Mode
+				int weight_bits;  // Weight bits
 			};
 			Candidate best_weights[BEST_CANDIDATES_COUNT];
 			Candidate best_endpoints[BEST_CANDIDATES_COUNT];
 			int endpoints_count = 0;
 			int weights_count = 0;
 
+			// Function to add a new candidate to the best candidates list
 			auto add_candidate = [&](Candidate* candidates, int& count, const Int128& bits, float rd_cost, int mtf_position)
 			{
+				// Check if candidate should be added
 				if (count < BEST_CANDIDATES_COUNT || rd_cost < candidates[BEST_CANDIDATES_COUNT - 1].rd_cost)
 				{
 					int insert_pos = count < BEST_CANDIDATES_COUNT ? count : BEST_CANDIDATES_COUNT - 1;
@@ -1122,18 +1144,24 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 						insert_pos--;
 					}
 
+					// Extract mode and weight bits from the candidate bits
 					int mode = (bits.bytes[0] | (bits.bytes[1] << 8)) & MODE_MASK;
 					int weight_bits = get_weight_bits(bits.bytes, weight_bits_tbl);
+
+					// Insert the candidate into the list
 					candidates[insert_pos] = {bits, rd_cost, mtf_position, mode, weight_bits};
 
+					// Increment count if not at capacity
 					if (count < BEST_CANDIDATES_COUNT)
 						count++;
 				}
 			};
 
 			// Add the current block to the candidates
-			add_candidate(best_weights, weights_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, current_weights_mask, current_endpoints_mask, &histogram), mtf_weights_pos);
-			add_candidate(best_endpoints, endpoints_count, current_bits, original_mse + lambda * MEASURE_RATE(mtf_weights_pos, mtf_endpoints_pos, current_bits, current_weights_mask, current_endpoints_mask, &histogram), mtf_endpoints_pos);
+			float current_rate = calculate_bit_cost_simple(mtf_weights_pos, mtf_endpoints_pos, current_bits, current_weights_mask, current_endpoints_mask, &histogram);
+			float current_rd_cost = original_mse + lambda * current_rate;
+			add_candidate(best_weights, weights_count, current_bits, current_rd_cost, mtf_weights_pos);
+			add_candidate(best_endpoints, endpoints_count, current_bits, current_rd_cost, mtf_endpoints_pos);
 
 			// Replace the ref1 and ref2 bit extraction with the helper function
 			Int128 ref1_bits(ref1 + block_index * block_size);
@@ -1143,8 +1171,10 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			int mtf_weights_pos_ref1 = mtf_search(&mtf_weights, ref1_bits, ref1_weight_mask);
 			int mtf_endpoints_pos_ref1 = mtf_search(&mtf_endpoints, ref1_bits, ref1_endpoint_mask);
 			float ref1_mse = get_or_compute_mse(ref1_bits);
-			add_candidate(best_weights, weights_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_weights_pos_ref1);
-			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, ref1_weight_mask, ref1_endpoint_mask, &histogram), mtf_endpoints_pos_ref1);
+			float ref1_rate = calculate_bit_cost_simple(mtf_weights_pos_ref1, mtf_endpoints_pos_ref1, ref1_bits, ref1_weight_mask, ref1_endpoint_mask, &histogram);
+			float ref1_rd_cost = ref1_mse + lambda * ref1_rate;
+			add_candidate(best_weights, weights_count, ref1_bits, ref1_rd_cost, mtf_weights_pos_ref1);
+			add_candidate(best_endpoints, endpoints_count, ref1_bits, ref1_rd_cost, mtf_endpoints_pos_ref1);
 
 			// Add ref2
 			Int128 ref2_bits(ref2 + block_index * block_size);
@@ -1154,8 +1184,10 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			int mtf_weights_pos_ref2 = mtf_search(&mtf_weights, ref2_bits, ref2_weight_mask);
 			int mtf_endpoints_pos_ref2 = mtf_search(&mtf_endpoints, ref2_bits, ref2_endpoint_mask);
 			float ref2_mse = get_or_compute_mse(ref2_bits);
-			add_candidate(best_weights, weights_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_weights_pos_ref2);
-			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_mse + lambda * MEASURE_RATE(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, ref2_weight_mask, ref2_endpoint_mask, &histogram), mtf_endpoints_pos_ref2);
+			float ref2_rate = calculate_bit_cost_simple(mtf_weights_pos_ref2, mtf_endpoints_pos_ref2, ref2_bits, ref2_weight_mask, ref2_endpoint_mask, &histogram);
+			float ref2_rd_cost = ref2_mse + lambda * ref2_rate;
+			add_candidate(best_weights, weights_count, ref2_bits, ref2_rd_cost, mtf_weights_pos_ref2);
+			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_rd_cost, mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
 			for (int k = 0; k < mtf_endpoints.size; k++)
@@ -1171,7 +1203,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 				// Find the corresponding weight position
 				int weight_pos = mtf_search(&mtf_weights, candidate_endpoints, weights_mask);
 
-				float bit_cost = MEASURE_RATE(weight_pos, k, candidate_endpoints, weights_mask, endpoints_mask, &histogram);
+				float bit_cost = calculate_bit_cost_simple(weight_pos, k, candidate_endpoints, weights_mask, endpoints_mask, &histogram);
 				float rd_cost = mse + lambda * bit_cost;
 
 				// Insert into best_endpoints if it's one of the best candidates
@@ -1196,7 +1228,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 					{
 						Int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
 						float mse = get_or_compute_mse(combined_bits);
-						float bit_cost = MEASURE_RATE(k, best_endpoints[m].mtf_position, combined_bits, weights_mask, endpoints_mask, &histogram);
+						float bit_cost = calculate_bit_cost_simple(k, best_endpoints[m].mtf_position, combined_bits, weights_mask, endpoints_mask, &histogram);
 						float rd_cost = mse + lambda * bit_cost;
 
 						// Insert into best_weights if it's one of the best candidates
@@ -1211,13 +1243,16 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 				for (int j = 0; j < endpoints_count; j++)
 				{
 					Int128 candidate_endpoints = best_endpoints[j].bits;
+					Int128 candidate_weights = best_weights[i].bits;
 					int endpoints_weight_bits = best_endpoints[j].weight_bits;
+					int weights_weight_bits = best_weights[i].weight_bits;
 					Int128 weights_mask, endpoints_mask;
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
 					// Try candidate_endpoints as-is first
-					float mse = get_or_compute_mse(candidate_endpoints);
-					float rd_cost = mse + lambda * MEASURE_RATE(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, weights_mask, endpoints_mask, &histogram);
+					// float mse = get_or_compute_mse(candidate_endpoints);
+					// float rd_cost = mse + lambda * calculate_bit_cost_simple(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, weights_mask, endpoints_mask, &histogram);
+					float rd_cost = best_endpoints[j].rd_cost;
 					if (rd_cost < best_rd_cost)
 					{
 						best_match = candidate_endpoints;
@@ -1225,11 +1260,11 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 					}
 
 					// Then try the candidate_endpoints with candidate weights weights
-					if (best_endpoints[j].weight_bits != 0)
+					if (endpoints_weight_bits != 0)
 					{
-						Int128 temp_bits = best_weights[i].bits.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
-						mse = get_or_compute_mse(temp_bits);
-						rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &histogram);
+						Int128 temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(candidate_endpoints.bitwise_and(endpoints_mask));
+						float mse = get_or_compute_mse(temp_bits);
+						rd_cost = mse + lambda * calculate_bit_cost_simple(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &histogram);
 						if (rd_cost < best_rd_cost)
 						{
 							best_match = temp_bits;
@@ -1238,15 +1273,13 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 					}
 
 					// now do the same thing for weights
-					Int128 candidate_weights = best_weights[i].bits;
-					int weights_weight_bits = best_weights[i].weight_bits;
 					if (weights_weight_bits != 0)
 					{
 						calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
-						Int128 temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(best_endpoints[j].bits.bitwise_and(endpoints_mask));
-						mse = get_or_compute_mse(temp_bits);
-						rd_cost = mse + lambda * MEASURE_RATE(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &histogram);
+						Int128 temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(candidate_endpoints.bitwise_and(endpoints_mask));
+						float mse = get_or_compute_mse(temp_bits);
+						rd_cost = mse + lambda * calculate_bit_cost_simple(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &histogram);
 						if (rd_cost < best_rd_cost)
 						{
 							best_match = temp_bits;
@@ -1256,6 +1289,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 				}
 			}
 
+			// If we found a better match, update the current block
 			if (!best_match.is_equal(current_bits))
 				memcpy(current_block, best_match.bytes, 16);
 
@@ -1272,17 +1306,21 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 				literal_mask = literal_mask.bitwise_or(best_weights_mask);
 			if (best_mtf_endpoints_pos == -1)
 				literal_mask = literal_mask.bitwise_or(best_endpoints_mask);
+
+			// Update statistics
 			histo_update(&histogram, best_match, literal_mask);
 			mtf_encode(&mtf_weights, best_match, best_weights_mask);
 			mtf_encode(&mtf_endpoints, best_match, best_endpoints_mask);
 
 			// After finding the best match, propagate the error
 			float final_mse = get_or_compute_mse(best_match);
-			float final_rate = MEASURE_RATE(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, best_weights_mask, best_endpoints_mask, &histogram);
+			float final_rate = calculate_bit_cost_simple(mtf_search(&mtf_weights, best_match, best_weights_mask), mtf_search(&mtf_endpoints, best_match, best_endpoints_mask), best_match, best_weights_mask, best_endpoints_mask, &histogram);
 
+			// Calculate differences for error propagation
 			float mse_diff = final_mse - adjusted_mse;
 			float rate_diff = final_rate - adjusted_rate;
 
+			// Propagate the error to neighboring blocks
 			propagate_error(x, y, z, mse_diff, rate_diff, is_forward);
 
 			// Update progress after processing each block
@@ -1293,17 +1331,20 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			}
 		};
 
+		// Main thread loop to process work items from the queue
 		while (true)
 		{
 			WorkItem work_item = {};
 			{
 				std::unique_lock<std::mutex> lock(queue_mutex);
 				cv.wait(lock, [&]() { return !work_queue.empty() || all_work_done; });
+				// Exit if all work is done and the queue is empty
 				if (all_work_done && work_queue.empty())
 				{
 					free(block_cache);
 					return;
 				}
+				// Get next work item if available
 				if (!work_queue.empty())
 				{
 					work_item = work_queue.front();
@@ -1314,26 +1355,35 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			// Reset MTF structures for each work item
 			if (effort >= 9)
 			{
+				// Maximum effort: use largest MTF sizes
 				mtf_init(&mtf_weights, MAX_MTF_SIZE);
 				mtf_init(&mtf_endpoints, MAX_MTF_SIZE);
 			}
 			else if (effort >= 5)
 			{
+				// Medium effort: use medium MTF sizes
 				mtf_init(&mtf_weights, MTF_WEIGHTS_SIZE * 4);
 				mtf_init(&mtf_endpoints, MTF_ENDPOINTS_SIZE);
 			}
 			else
 			{
+				// Low effort: use small MTF sizes
 				mtf_init(&mtf_weights, MTF_WEIGHTS_SIZE);
 				mtf_init(&mtf_endpoints, MTF_ENDPOINTS_SIZE);
 			}
 			histo_reset(&histogram);
 
+			// Seed the structures with random blocks
+			// Use work_item index as part of the seed for variety between chunks
+			seed_structures(mtf_weights, mtf_endpoints, histogram, (unsigned)work_item.start_block, work_item.start_block, work_item.end_block);
+
 			// Process the work item
 			if (work_item.is_forward)
+				// Forward pass: process blocks from start to end
 				for (size_t i = work_item.start_block; i < work_item.end_block; i++)
 					process_block(i, true);
 			else
+				// Backward pass: process blocks from end to start
 				for (size_t i = work_item.end_block; i-- > work_item.start_block;)
 					process_block(i, false);
 		}
@@ -1342,7 +1392,9 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 	// Function to run a single pass (backward or forward)
 	auto run_pass = [&](bool is_forward)
 	{
-		// Fill the work queue
+		tmZone(0, 0, "run_pass");
+
+		// Fill the work queue with block ranges
 		for (size_t start_block = 0; start_block < num_blocks; start_block += MAX_BLOCKS_PER_ITEM)
 		{
 			size_t end_block = astc::min(start_block + MAX_BLOCKS_PER_ITEM, num_blocks);
@@ -1362,6 +1414,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 		}
 		cv.notify_all();
 
+		// Wait for all threads to finish
 		for (auto& thread : threads)
 			thread.join();
 
@@ -1370,57 +1423,68 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 		work_queue = std::queue<WorkItem>();
 	};
 
+	// Print start message if not in silent mode
 	if (!silentmode)
 		printf("Starting optimization pass...\n");
 
 	// Run backward pass
 	if (effort >= 9)
-	{
 		run_pass(false);
-	}
 
 	// Run forward pass
 	run_pass(true);
 
+	// Print completion message if not in silent mode
 	if (!silentmode)
 		printf("\nOptimization complete!\n");
 
+	// Free allocated memory
 	free(error_buffer);
 	free(weight_bits_tbl);
 }
 
+// Reconstruct the full image from the decoded blocks
 template <typename T>
 void reconstruct_image(T* all_original_decoded, int width, int height, int depth, int block_width, int block_height, int block_depth, T* output_image)
 {
+	tmFunction(0, 0); // Profiling marker
+
+	// Calculate the number of blocks in each dimension
 	int blocks_x = (width + block_width - 1) / block_width;
 	int blocks_y = (height + block_height - 1) / block_height;
 	int blocks_z = (depth + block_depth - 1) / block_depth;
-	int channels = 4;
+	int channels = 4; // Assuming 4 channels (RGBA)
 
+	// Reconstruct image from blocks
 	for (int z = 0; z < blocks_z; z++)
 	{
 		for (int y = 0; y < blocks_y; y++)
 		{
 			for (int x = 0; x < blocks_x; x++)
 			{
+				// Calculate the index of the current block
 				int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
 				T* block_data = all_original_decoded + block_index * block_width * block_height * block_depth * channels;
 
+				// Copy block pioxels to output image
 				for (int bz = 0; bz < block_depth; bz++)
 				{
 					for (int by = 0; by < block_height; by++)
 					{
 						for (int bx = 0; bx < block_width; bx++)
 						{
+							// Calculate image and block pixel coordinatges
 							int image_x = x * block_width + bx;
 							int image_y = y * block_height + by;
 							int image_z = z * block_depth + bz;
 
+							// Only copy pixels within the image bounds
 							if (image_x < width && image_y < height && image_z < depth)
 							{
 								int image_index = (image_z * height * width + image_y * width + image_x) * channels;
 								int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * channels;
 
+								// Copy all channels
 								for (int c = 0; c < channels; c++)
 								{
 									output_image[image_index + c] = block_data[block_pixel_index + c];
@@ -1439,10 +1503,14 @@ void reconstruct_image(T* all_original_decoded, int width, int height, int depth
 // Generate 1D Gaussian kernel
 static void generate_gaussian_kernel(float sigma, float* kernel, int* kernel_radius)
 {
+	tmFunction(0, 0);
+
+	// Calculate kernel radius based on sigma (3 sigma rule)
 	*kernel_radius = (int)ceil(3.0f * sigma);
 	if (*kernel_radius > MAX_KERNEL_SIZE / 2)
 		*kernel_radius = MAX_KERNEL_SIZE / 2;
 
+	// Generate kernel values
 	float sum = 0.0f;
 	for (int x = -(*kernel_radius); x <= *kernel_radius; x++)
 	{
@@ -1460,6 +1528,8 @@ static void generate_gaussian_kernel(float sigma, float* kernel, int* kernel_rad
 template <typename T>
 static void apply_1d_convolution_3d(const T* input, T* output, int width, int height, int depth, int channels, const float* kernel, int kernel_radius, int direction)
 {
+	tmFunction(0, 0);
+
 	for (int z = 0; z < depth; z++)
 	{
 		for (int y = 0; y < height; y++)
@@ -1507,6 +1577,8 @@ static void apply_1d_convolution_3d(const T* input, T* output, int width, int he
 template <typename T>
 void gaussian_blur_3d(const T* input, T* output, int width, int height, int depth, int channels, float sigma, int block_depth)
 {
+	tmFunction(0, 0);
+
 	float kernel[MAX_KERNEL_SIZE];
 	int kernel_radius;
 	generate_gaussian_kernel(sigma, kernel, &kernel_radius);
@@ -1537,6 +1609,8 @@ void gaussian_blur_3d(const T* input, T* output, int width, int height, int dept
 template <typename T>
 void high_pass_filter_squared_blurred(const T* input, float* output, int width, int height, int depth, float sigma_highpass, float sigma_blur, const vfloat4& channel_weights, int block_depth)
 {
+	tmFunction(0, 0);
+
 	(void)channel_weights;
 	size_t pixel_count = width * height * depth;
 	size_t image_size = pixel_count * 4;
@@ -1569,18 +1643,46 @@ void high_pass_filter_squared_blurred(const T* input, float* output, int width, 
 	float C1 = 256.0f;
 	float C2 = 1.0f;
 	float activity_scalar = 4.0f;
+
+	// Create debug output buffer
+	// uint8_t* debug_output = (uint8_t*)malloc(pixel_count);
+	// float max_val = 0;
+
+	// First pass to find maximum value
 	for (size_t i = 0; i < pixel_count; i++)
 	{
-		output[i] = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
-		// output[i] = astc::max(output[i], 1.f);
+		float val = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
+		// max_val = astc::max(max_val, val);
+		output[i] = val;
 	}
 
+	// Second pass to normalize and convert to 8-bit
+	// for (size_t i = 0; i < pixel_count; i++)
+	//{
+	// float normalized = output[i] / max_val;
+	// debug_output[i] = (uint8_t)(normalized * 255.0f);
+	//}
+
+	// Save debug output as TGA
+	// For 3D textures, save first slice only
+	// if (depth > 1)
+	//{
+	// jo_write_tga("activity_mask_slice0.tga", debug_output, width, height, 1, 8);
+	//}
+	// else
+	//{
+	// jo_write_tga("activity_mask.tga", debug_output, width, height, 1, 8);
+	//}
+
+	// free(debug_output);
 	free(blurred);
 	free(squared_diff);
 }
 
 static void high_pass_to_block_gradients(const float* high_pass_image, float* block_gradients, int width, int height, int depth, int block_width, int block_height, int block_depth)
 {
+	tmFunction(0, 0);
+
 	int blocks_x = (width + block_width - 1) / block_width;
 	int blocks_y = (height + block_height - 1) / block_height;
 	int blocks_z = (depth + block_depth - 1) / block_depth;
@@ -1636,8 +1738,16 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 	}
 }
 
+// Main optimization function for ASTC Lz optimization
 astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float channel_weights[4], int thread_count, bool silentmode, float lambda, float effort)
 {
+	// Main optimization logic
+	// Uses dual_mtf_pass to perform forward and backward passes
+	// over the compressed data, attempting to optimize each block
+	// while maintaining good compression ratio.
+
+	tmFunction(0, 0);
+
 	// nothing to do if lambda is 0
 	if (lambda <= 0)
 	{
@@ -1654,7 +1764,7 @@ astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, s
 	float lambda_0 = 0.0f;
 	float lambda_5 = 2.5f;
 	float lambda_10 = 4.f;
-	float lambda_40 = 8.f;
+	float lambda_40 = 9.5f;
 
 	if (lambda <= 0.0f)
 	{
