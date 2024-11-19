@@ -1810,7 +1810,7 @@ astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_
 	if (lambda <= 0)
 		lambda = 0;
 
-	float lambda_scale = (block_width * block_height * block_depth) / 16.f;
+	float lambda_scale = astc::sqrt((block_width * block_height * block_depth) / 16.f);
 	lambda *= lambda_scale;
 
 	// Initialize block_size_descriptor once
