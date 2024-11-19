@@ -1763,7 +1763,7 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 }
 
 // Main optimization function for ASTC Lz optimization
-astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float channel_weights[4], int thread_count, bool silentmode, float lambda, float effort)
+astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_uncomp_in_component_count, bool image_uncomp_in_is_hdr, uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float channel_weights[4], int thread_count, bool silentmode, float lambda, float effort)
 {
 	// Main optimization logic
 	// Uses dual_mtf_pass to perform forward and backward passes
@@ -1817,27 +1817,116 @@ astcenc_error astcenc_optimize_for_lz(uint8_t* data, uint8_t* exhaustive_data, s
 	block_size_descriptor* bsd = (block_size_descriptor*)malloc(sizeof(*bsd));
 	init_block_size_descriptor(block_width, block_height, block_depth, false, 4, 43, *bsd);
 
-	// Calculate gradient magnitudes and adjusted lambdas for all blocks
+	// Calculate dimensions
+	int width = blocks_x * block_width;
+	int height = blocks_y * block_height;
+	int depth = blocks_z * block_depth;
+
+	// Calculate block data sizes
 	const int block_size = 16;
 	size_t num_blocks = data_len / block_size;
-	size_t decoded_block_size = block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
+	size_t decoded_block_size = 0;
+	switch (block_type)
+	{
+	case ASTCENC_TYPE_U8:
+		decoded_block_size = block_width * block_height * block_depth * 4;
+		break;
+	case ASTCENC_TYPE_F16:
+	case ASTCENC_TYPE_F32:
+		decoded_block_size = block_width * block_height * block_depth * 4 * 4; // Always use float (4 bytes per component)
+		break;
+	}
+
+	// Allocate memory for block-organized uncompressed data
 	uint8_t* all_original_decoded = (uint8_t*)malloc(num_blocks * decoded_block_size);
+
+	// Convert image_uncomp_in data into block-organized format
+	for (int z = 0; z < blocks_z; z++)
+	{
+		for (int y = 0; y < blocks_y; y++)
+		{
+			for (int x = 0; x < blocks_x; x++)
+			{
+				int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
+				uint8_t* block_data = all_original_decoded + block_index * decoded_block_size;
+
+				// Copy pixels from image_uncomp_in to block data
+				for (int bz = 0; bz < block_depth; bz++)
+				{
+					for (int by = 0; by < block_height; by++)
+					{
+						for (int bx = 0; bx < block_width; bx++)
+						{
+							// Clamp coordinates to image bounds
+							int image_x = astc::min<int>(x * block_width + bx, image_uncomp_in->dim_x - 1);
+							int image_y = astc::min<int>(y * block_height + by, image_uncomp_in->dim_y - 1);
+							int image_z = astc::min<int>(z * block_depth + bz, image_uncomp_in->dim_z - 1);
+
+							int image_index = (image_z * image_uncomp_in->dim_y * image_uncomp_in->dim_x + image_y * image_uncomp_in->dim_x + image_x) * image_uncomp_in_component_count;
+							int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
+
+							// Copy pixel data, handling component count conversion
+							if (block_type == ASTCENC_TYPE_U8)
+							{
+								uint8_t* block_data_u8 = (uint8_t*)block_data;
+								for (int c = 0; c < 4; c++)
+								{
+									if (c < image_uncomp_in_component_count)
+									{
+										block_data_u8[block_pixel_index + c] = ((uint8_t*)image_uncomp_in->data[0])[image_index + c];
+									}
+									else
+									{
+										// Fill missing components (alpha = 255, others = 0)
+										block_data_u8[block_pixel_index + c] = (c == 3) ? 255 : 0;
+									}
+								}
+							}
+							else
+							{
+								float* block_data_f32 = (float*)block_data;
+								for (int c = 0; c < 4; c++)
+								{
+									if (c < image_uncomp_in_component_count)
+									{
+										if (image_uncomp_in_is_hdr)
+										{
+											if (image_uncomp_in->data_type == ASTCENC_TYPE_F16)
+											{
+												// Convert from F16 to F32
+												uint16_t f16_val = ((uint16_t*)image_uncomp_in->data[0])[image_index + c];
+												block_data_f32[block_pixel_index + c] = float16_to_float(f16_val);
+											}
+											else
+											{
+												// Already F32
+												block_data_f32[block_pixel_index + c] = ((float*)image_uncomp_in->data[0])[image_index + c];
+											}
+										}
+										else
+										{
+											// Convert from U8 to F32
+											uint8_t u8_val = ((uint8_t*)image_uncomp_in->data[0])[image_index + c];
+											block_data_f32[block_pixel_index + c] = (float)u8_val / 255.0f;
+										}
+									}
+									else
+									{
+										// Fill missing components (alpha = 1.0, others = 0)
+										block_data_f32[block_pixel_index + c] = (c == 3) ? 1.0f : 0.0f;
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Preserve original blocks
 	uint8_t* original_blocks = (uint8_t*)malloc(data_len);
 	memcpy(original_blocks, data, data_len);
-
-	for (size_t i = 0; i < num_blocks; i++)
-	{
-		uint8_t* original_block = exhaustive_data + i * block_size;
-		uint8_t* decoded_block = all_original_decoded + i * decoded_block_size;
-		astc_decompress_block(*bsd, original_block, decoded_block, block_width, block_height, block_depth, block_type);
-	}
-
-	// Calculate the full image dimensions
-	int width = blocks_x * block_width;
-	int height = blocks_y * block_height;
-	int depth = blocks_z * block_depth;
 
 	// Allocate memory for the reconstructed image
 	size_t image_size = width * height * depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
