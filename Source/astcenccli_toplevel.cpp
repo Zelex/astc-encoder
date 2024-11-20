@@ -2311,7 +2311,7 @@ int astcenc_main(
 			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
 			float channel_weights[4] = {config.cw_r_weight, config.cw_g_weight, config.cw_b_weight, config.cw_a_weight};
-			astcenc_optimize_for_lz(image_uncomp_in, image_uncomp_in_component_count, image_uncomp_in_is_hdr, buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo, cli_config.lz_optimize_effort);
+			astcenc_optimize_for_lz(image_uncomp_in, image_uncomp_in_component_count, image_uncomp_in_is_hdr, &work.swizzle, buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo, cli_config.lz_optimize_effort);
 		}
 
 		// Clean up

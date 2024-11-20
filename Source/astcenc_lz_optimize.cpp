@@ -1762,8 +1762,31 @@ static void high_pass_to_block_gradients(const float* high_pass_image, float* bl
 	}
 }
 
+static inline float get_swizzled_value(const float components[4], const astcenc_swz swz)
+{
+	switch (swz)
+	{
+	case ASTCENC_SWZ_R:
+	case ASTCENC_SWZ_G:
+	case ASTCENC_SWZ_B:
+	case ASTCENC_SWZ_A:
+		return components[swz];
+	case ASTCENC_SWZ_0:
+		return 0.0f;
+	case ASTCENC_SWZ_1:
+		return 1.0f;
+	case ASTCENC_SWZ_Z:
+		// Reconstruct Z from X and Y assuming unit vector
+		float x = components[0] * 2.0f - 1.0f;
+		float y = components[1] * 2.0f - 1.0f;
+		float z = 1.0f - x * x - y * y;
+		return z <= 0.0f ? 0.0f : (astc::sqrt(z) * 0.5f + 0.5f);
+	}
+	return 0.0f;
+}
+
 // Main optimization function for ASTC Lz optimization
-astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_uncomp_in_component_count, bool image_uncomp_in_is_hdr, uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float channel_weights[4], int thread_count, bool silentmode, float lambda, float effort)
+astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_uncomp_in_component_count, bool image_uncomp_in_is_hdr, const astcenc_swizzle* swizzle, uint8_t* data, uint8_t* exhaustive_data, size_t data_len, int blocks_x, int blocks_y, int blocks_z, int block_width, int block_height, int block_depth, int block_type, float channel_weights[4], int thread_count, bool silentmode, float lambda, float effort)
 {
 	// Main optimization logic
 	// Uses dual_mtf_pass to perform forward and backward passes
@@ -1865,57 +1888,51 @@ astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_
 							int image_index = (image_z * image_uncomp_in->dim_y * image_uncomp_in->dim_x + image_y * image_uncomp_in->dim_x + image_x) * image_uncomp_in_component_count;
 							int block_pixel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
 
-							// Copy pixel data, handling component count conversion
-							if (block_type == ASTCENC_TYPE_U8)
+							// Load components as floats first (for consistent swizzling)
+							float components[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // Default values
+							for (int c = 0; c < image_uncomp_in_component_count; c++)
 							{
-								uint8_t* block_data_u8 = (uint8_t*)block_data;
-								for (int c = 0; c < 4; c++)
+								if (image_uncomp_in_is_hdr)
 								{
-									if (c < image_uncomp_in_component_count)
+									if (image_uncomp_in->data_type == ASTCENC_TYPE_F16)
 									{
-										block_data_u8[block_pixel_index + c] = ((uint8_t*)image_uncomp_in->data[0])[image_index + c];
+										uint16_t f16_val = ((uint16_t*)image_uncomp_in->data[0])[image_index + c];
+										components[c] = float16_to_float(f16_val);
 									}
 									else
 									{
-										// Fill missing components (alpha = 255, others = 0)
-										block_data_u8[block_pixel_index + c] = (c == 3) ? 255 : 0;
+										components[c] = ((float*)image_uncomp_in->data[0])[image_index + c];
 									}
 								}
+								else
+								{
+									uint8_t u8_val = ((uint8_t*)image_uncomp_in->data[0])[image_index + c];
+									components[c] = (float)u8_val / 255.0f;
+								}
+							}
+
+							// Apply swizzle and store
+							float swizzled[4];
+							swizzled[0] = get_swizzled_value(components, swizzle->r);
+							swizzled[1] = get_swizzled_value(components, swizzle->g);
+							swizzled[2] = get_swizzled_value(components, swizzle->b);
+							swizzled[3] = get_swizzled_value(components, swizzle->a);
+
+							if (block_type == ASTCENC_TYPE_U8)
+							{
+								uint8_t* block_data_u8 = (uint8_t*)block_data;
+								block_data_u8[block_pixel_index + 0] = (uint8_t)(swizzled[0] * 255.0f + 0.5f);
+								block_data_u8[block_pixel_index + 1] = (uint8_t)(swizzled[1] * 255.0f + 0.5f);
+								block_data_u8[block_pixel_index + 2] = (uint8_t)(swizzled[2] * 255.0f + 0.5f);
+								block_data_u8[block_pixel_index + 3] = (uint8_t)(swizzled[3] * 255.0f + 0.5f);
 							}
 							else
 							{
 								float* block_data_f32 = (float*)block_data;
-								for (int c = 0; c < 4; c++)
-								{
-									if (c < image_uncomp_in_component_count)
-									{
-										if (image_uncomp_in_is_hdr)
-										{
-											if (image_uncomp_in->data_type == ASTCENC_TYPE_F16)
-											{
-												// Convert from F16 to F32
-												uint16_t f16_val = ((uint16_t*)image_uncomp_in->data[0])[image_index + c];
-												block_data_f32[block_pixel_index + c] = float16_to_float(f16_val);
-											}
-											else
-											{
-												// Already F32
-												block_data_f32[block_pixel_index + c] = ((float*)image_uncomp_in->data[0])[image_index + c];
-											}
-										}
-										else
-										{
-											// Convert from U8 to F32
-											uint8_t u8_val = ((uint8_t*)image_uncomp_in->data[0])[image_index + c];
-											block_data_f32[block_pixel_index + c] = (float)u8_val / 255.0f;
-										}
-									}
-									else
-									{
-										// Fill missing components (alpha = 1.0, others = 0)
-										block_data_f32[block_pixel_index + c] = (c == 3) ? 1.0f : 0.0f;
-									}
-								}
+								block_data_f32[block_pixel_index + 0] = swizzled[0];
+								block_data_f32[block_pixel_index + 1] = swizzled[1];
+								block_data_f32[block_pixel_index + 2] = swizzled[2];
+								block_data_f32[block_pixel_index + 3] = swizzled[3];
 							}
 						}
 					}

@@ -866,6 +866,7 @@ ASTCENC_PUBLIC const char* astcenc_get_error_string(
  * @param image_uncomp_in The uncompressed image data.
  * @param image_uncomp_in_component_count The number of components in the uncompressed image.
  * @param image_uncomp_in_is_hdr Whether the uncompressed image is HDR.
+ * @param swizzle The swizzle for the uncompressed image.
  * @param data          The rdo compressed image data.
  * @param exhaustive_data The exhaustive compressed image data.
  * @param data_len      The length of the compressed data.
@@ -885,6 +886,7 @@ ASTCENC_PUBLIC astcenc_error astcenc_optimize_for_lz(
 	astcenc_image* image_uncomp_in,
 	int image_uncomp_in_component_count,
 	bool image_uncomp_in_is_hdr,
+	const astcenc_swizzle* swizzle,
 	uint8_t* data,
 	uint8_t* exhaustive_data,
 	size_t data_len,
