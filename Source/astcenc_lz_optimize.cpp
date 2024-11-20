@@ -885,7 +885,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 	// Add progress tracking
 	std::atomic<size_t> blocks_processed{0};
 	size_t total_blocks = num_blocks;
-	if (effort >= 9)
+	if (effort >= 8)
 		total_blocks *= 2; // include backwards pass
 
 	// Lanmbda function to print progress bar
@@ -1452,7 +1452,7 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 		printf("Starting optimization pass...\n");
 
 	// Run backward pass
-	if (effort >= 9)
+	if (effort >= 8)
 		run_pass(false);
 
 	// Run forward pass
@@ -1972,7 +1972,7 @@ astcenc_error astcenc_optimize_for_lz(astcenc_image* image_uncomp_in, int image_
 	high_pass_to_block_gradients(high_pass_image, block_gradients, width, height, depth, block_width, block_height, block_depth);
 
 	dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights_vec, effort);
-	if (effort >= 9)
+	if (effort >= 5)
 	{
 		dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights_vec, effort);
 	}
