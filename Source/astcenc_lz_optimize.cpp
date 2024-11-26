@@ -556,14 +556,13 @@ static void astc_decompress_block(const block_size_descriptor& bsd, // Block siz
 	else
 	{
 		// Store as 32-bit float RGBA
+		float* output_f = reinterpret_cast<float*>(output);
 		for (int i = 0; i < blk.texel_count; i++)
 		{
-			vfloat4 color = vfloat4(blk.data_r[i], blk.data_g[i], blk.data_b[i], blk.data_a[i]);
-			float* output_f = reinterpret_cast<float*>(output);
-			output_f[i * 4 + 0] = color.lane<0>();
-			output_f[i * 4 + 1] = color.lane<1>();
-			output_f[i * 4 + 2] = color.lane<2>();
-			output_f[i * 4 + 3] = color.lane<3>();
+			output_f[i * 4 + 0] = blk.data_r[i];
+			output_f[i * 4 + 1] = blk.data_g[i];
+			output_f[i * 4 + 2] = blk.data_b[i];
+			output_f[i * 4 + 3] = blk.data_a[i];
 		}
 	}
 }
