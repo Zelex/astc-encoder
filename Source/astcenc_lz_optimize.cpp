@@ -1081,8 +1081,8 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 			if (current_weight_bits == 0)
 			{
 				histo_update(&histogram, current_bits, Int128::from_int(-1));
-				mtf_encode(&mtf_weights, current_bits, Int128::from_int(-1));
-				mtf_encode(&mtf_endpoints, current_bits, Int128::from_int(0));
+				mtf_encode(&mtf_weights, current_bits, Int128::from_int(0));
+				mtf_encode(&mtf_endpoints, current_bits, Int128::from_int(-1));
 				return;
 			}
 
@@ -1273,8 +1273,6 @@ static void dual_mtf_pass(int thread_count, // Number of threads to use
 					calculate_masks(endpoints_weight_bits, weights_mask, endpoints_mask);
 
 					// Try candidate_endpoints as-is first
-					// float mse = get_or_compute_mse(candidate_endpoints);
-					// float rd_cost = mse + lambda * calculate_bit_cost_simple(mtf_search(&mtf_weights, candidate_endpoints, weights_mask), best_endpoints[j].mtf_position, candidate_endpoints, weights_mask, endpoints_mask, &histogram);
 					float rd_cost = best_endpoints[j].rd_cost;
 					if (rd_cost < best_rd_cost)
 					{
