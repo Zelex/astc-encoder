@@ -1777,7 +1777,7 @@ static inline float get_swizzled_value(const float components[4], const astcenc_
 		float x = components[0] * 2.0f - 1.0f;
 		float y = components[1] * 2.0f - 1.0f;
 		float z = 1.0f - x * x - y * y;
-		return z <= 0.0f ? 0.0f : (astc::sqrt(z) * 0.5f + 0.5f);
+		return z <= 0.0f ? 0.5f : (astc::sqrt(z) * 0.5f + 0.5f);
 	}
 	return 0.0f;
 }
