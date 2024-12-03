@@ -82,7 +82,8 @@ static constexpr unsigned int MAX_BLOCKS_PER_ITEM{8192};
 
 // 128-bit integer structure for handling ASTC block data
 // Used to manipulate compressed ASTC blocks which are 128 bits (16 bytes) in size
-struct int128 {
+struct int128 
+{
 	union 
 	{
 		uint64_t uint64[2]; // Access as two 64-bit integers
@@ -479,7 +480,7 @@ static inline float calculate_mrsse_weighted(
 		haccumulate(sum, diff * diff * vfloat(weights + i), lane_mask);
 		lane_id += vint(ASTCENC_SIMD_WIDTH);
 	}
-	return dot_s(sum, channel_weights);
+	return dot_s(sum, channel_weights) * 256.0f;
 }
 
 // Decompress an ASTC block to either U8 or float output
