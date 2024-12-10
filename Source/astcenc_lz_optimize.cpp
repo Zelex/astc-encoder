@@ -32,29 +32,31 @@ levels.
 #include <queue>
 #include <thread>
 #include <vector>
+#include <chrono>
+#include <numeric>
 
 // Add platform-specific aligned allocation macros
 #if defined(_MSC_VER)
-    // Windows/MSVC
-    #include <malloc.h>
-    #define ASTC_ALIGNED_MALLOC(size, align) _aligned_malloc(size, align)
-    #define ASTC_ALIGNED_FREE(ptr) _aligned_free(ptr)
+	// Windows/MSVC
+	#include <malloc.h>
+	#define ASTC_ALIGNED_MALLOC(size, align) _aligned_malloc(size, align)
+	#define ASTC_ALIGNED_FREE(ptr) _aligned_free(ptr)
 #elif defined(__APPLE__) || defined(__linux__)
-    // macOS, iOS, or Linux with C11 support
-    #define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc(align, (size + align - 1) & ~(align - 1))
-    #define ASTC_ALIGNED_FREE(ptr) free(ptr)
+	// macOS, iOS, or Linux with C11 support
+	#define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc(align, (size + align - 1) & ~(align - 1))
+	#define ASTC_ALIGNED_FREE(ptr) free(ptr)
 #else
-    // Fallback for other platforms - you might want to add more platform-specific cases
-    #include <cstdlib>
-    static inline void* aligned_alloc_fallback(size_t align, size_t size) 
+	// Fallback for other platforms - you might want to add more platform-specific cases
+	#include <cstdlib>
+	static inline void* aligned_alloc_fallback(size_t align, size_t size) 
 	{
-        void* ptr = nullptr;
-        if (posix_memalign(&ptr, align, size) != 0) 
-            return nullptr;
-        return ptr;
-    }
-    #define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc_fallback(align, size)
-    #define ASTC_ALIGNED_FREE(ptr) free(ptr)
+		void* ptr = nullptr;
+		if (posix_memalign(&ptr, align, size) != 0) 
+			return nullptr;
+		return ptr;
+	}
+	#define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc_fallback(align, size)
+	#define ASTC_ALIGNED_FREE(ptr) free(ptr)
 #endif
 
 #include "astcenc.h"
@@ -207,29 +209,29 @@ static void jo_write_tga(
 	int numChannels, 
 	int bit_depth
 ) {
-    FILE *fp = fopen(filename, "wb");
-    if(!fp) {
-        return;
-    }
-    // Header
-    fwrite("\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00", 12, 1, fp);
-    fwrite(&width, 2, 1, fp);
-    fwrite(&height, 2, 1, fp);
-    int bpc = (numChannels * bit_depth) | 0x2000; // N bits per pixel
-    int byte_depth = (bit_depth+7) / 8;
-    fwrite(&bpc, 2, 1, fp);
-    // Swap RGBA to BGRA if using 3 or more channels
-    int remap[4] = {numChannels >= 3 ? 2*byte_depth : 0, 1*byte_depth, numChannels >= 3 ? 0 : 2*byte_depth, 3*byte_depth}; 
+	FILE *fp = fopen(filename, "wb");
+	if(!fp) {
+		return;
+	}
+	// Header
+	fwrite("\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00", 12, 1, fp);
+	fwrite(&width, 2, 1, fp);
+	fwrite(&height, 2, 1, fp);
+	int bpc = (numChannels * bit_depth) | 0x2000; // N bits per pixel
+	int byte_depth = (bit_depth+7) / 8;
+	fwrite(&bpc, 2, 1, fp);
+	// Swap RGBA to BGRA if using 3 or more channels
+	int remap[4] = {numChannels >= 3 ? 2*byte_depth : 0, 1*byte_depth, numChannels >= 3 ? 0 : 2*byte_depth, 3*byte_depth}; 
 	char *s = (char *)rgba; 
 	for(int i = 0; i < width*height; ++i) 
 	{ 
 		for(int j = 0; j < numChannels; ++j) 
 		{
-            fwrite(s + remap[j], byte_depth, 1, fp);
-        }
-        s += numChannels*byte_depth;
-    }
-    fclose(fp);
+			fwrite(s + remap[j], byte_depth, 1, fp);
+		}
+		s += numChannels*byte_depth;
+	}
+	fclose(fp);
 }
 */
 
@@ -418,12 +420,12 @@ static int mtf_encode(
 // Calculate bit cost for encoding using MTF and literal values
 // Returns the total bit cost combining MTF positions and literal encoding costs
 static float calculate_bit_cost_simple(
-    int mtf_value_1,             // MTF position for first part (-1 if not found)
-    int mtf_value_2,             // MTF position for second part (-1 if not found)
-    const int128 &literal_value, // Full literal value to encode
-    const int128 &mask_1,        // Mask for first part
-    const int128 &mask_2,        // Mask for second part
-    histogram *histogram
+	int mtf_value_1,             // MTF position for first part (-1 if not found)
+	int mtf_value_2,             // MTF position for second part (-1 if not found)
+	const int128 &literal_value, // Full literal value to encode
+	const int128 &mask_1,        // Mask for first part
+	const int128 &mask_2,        // Mask for second part
+	histogram *histogram
 ) // Histogram for literal encoding costs
 {
 	// Case 1: Both parts need literal encoding
@@ -444,11 +446,11 @@ static float calculate_bit_cost_simple(
 
 // Calculate Sum of Squared Differences (SSD) with weights for U8 image data
 static inline float calculate_ssd_weighted(
-    const uint8_t* img1,           // first image data
-    const uint8_t* img2,           // second image data
-    int texel_count,               // total number of texels
-    const float* weights,          // Per-texel weights (one float per texel)
-    const vfloat4& channel_weights // Per-channel importance weights
+	const uint8_t* img1,           // first image data
+	const uint8_t* img2,           // second image data
+	int texel_count,               // total number of texels
+	const float* weights,          // Per-texel weights (one float per texel)
+	const vfloat4& channel_weights // Per-channel importance weights
 ) {
 	vfloat4 sum = vfloat4::zero();
 
@@ -463,11 +465,11 @@ static inline float calculate_ssd_weighted(
 
 // Calculate Mean Relative Sum of Squared Errors (MRSSE) with weights for float image data
 static inline float calculate_mrsse_weighted(
-    const float* img1,             // first image data
-    const float* img2,             // second image data
-    int texel_count,               // total number of texels
-    const float* weights,          // Per-texel weights (one float per texel)
-    const vfloat4& channel_weights // Per-channel importance weights
+	const float* img1,             // first image data
+	const float* img2,             // second image data
+	int texel_count,               // total number of texels
+	const float* weights,          // Per-texel weights (one float per texel)
+	const vfloat4& channel_weights // Per-channel importance weights
 ) {
 	vfloat4 sum = vfloat4::zero();
 	for(int i = 0; i < texel_count; i++)
@@ -480,13 +482,13 @@ static inline float calculate_mrsse_weighted(
 
 // Decompress an ASTC block to either U8 or float output
 static void astc_decompress_block(
-    const block_size_descriptor &bsd, // Block size descriptor
-    const uint8_t *block_ptr,         // Block data pointer
-    uint8_t *output,                  // Output buffer
-    int block_width,                  // Block dimensions
-    int block_height,
-    int block_depth,
-    int block_type // Block type (ASTCENC_TYPE_U8 or ASTCENC_TYPE_F32)
+	const block_size_descriptor &bsd, // Block size descriptor
+	const uint8_t *block_ptr,         // Block data pointer
+	uint8_t *output,                  // Output buffer
+	int block_width,                  // Block dimensions
+	int block_height,
+	int block_depth,
+	int block_type // Block type (ASTCENC_TYPE_U8 or ASTCENC_TYPE_F32)
 ) {
 	// Initialize image block structure
 	image_block blk{};
@@ -809,25 +811,25 @@ static inline uint32_t xorshift32(
 
 // Performs forward and backwards optimization passes over blocks
 static void dual_mtf_pass(
-    int thread_count, // Number of threads to use
-    bool silentmode,  // Supress progress output
-    uint8_t *data,    // Input/output compressed data
-    uint8_t *ref1,    // Pointer to reference 1 data
-    uint8_t *ref2,    // Pointer to reference 2 data
-    size_t data_len,  // Length of input data
-    int blocks_x,     // Block dimensions
-    int blocks_y,
-    int blocks_z,                  // Block dimensions
-    int block_width,               // Block size
-    int block_height,              // Block dimensions
-    int block_depth,               // Block dimensions
-    int block_type,                // ASTC block type
-    float lambda,                  // Lambda parameter for rate-distortion optimization
-    block_size_descriptor *bsd,    // Block size descriptor
-    uint8_t *all_original_decoded, // Pointer to original decoded data
-    float *per_texel_weights,      // Per-texel weights for activity
-    vfloat4 channel_weights,       // Channel importance weights
-    float effort                   // Optimization effort
+	int thread_count, // Number of threads to use
+	bool silentmode,  // Supress progress output
+	uint8_t *data,    // Input/output compressed data
+	uint8_t *ref1,    // Pointer to reference 1 data
+	uint8_t *ref2,    // Pointer to reference 2 data
+	size_t data_len,  // Length of input data
+	int blocks_x,     // Block dimensions
+	int blocks_y,
+	int blocks_z,                  // Block dimensions
+	int block_width,               // Block size
+	int block_height,              // Block dimensions
+	int block_depth,               // Block dimensions
+	int block_type,                // ASTC block type
+	float lambda,                  // Lambda parameter for rate-distortion optimization
+	block_size_descriptor *bsd,    // Block size descriptor
+	uint8_t *all_original_decoded, // Pointer to original decoded data
+	float *per_texel_weights,      // Per-texel weights for activity
+	vfloat4 channel_weights,       // Channel importance weights
+	float effort                   // Optimization effort
 ) {
 	// Uses multiple threads to process blocks
 	// Each thread maintains its own MTF lists and histogram
@@ -1621,76 +1623,228 @@ template <typename T> static void compute_activity_map(
 	float sigma_highpass, 
 	float sigma_blur, 
 	const vfloat4 &channel_weights, 
-	int block_depth
+	int block_depth,
+	int thread_count,
+	bool silentmode
 ) {
 	tmFunction(0, 0);
 
-	(void)channel_weights;
-	size_t pixel_count = width * height * depth;
-	size_t image_size = pixel_count * 4;
-	T *blurred = new T[image_size];
-	float *squared_diff = new float[pixel_count];
+	auto start_time = std::chrono::high_resolution_clock::now();
 
-	// Apply initial Gaussian blur for high-pass filter
-	gaussian_blur_3d(input, blurred, width, height, depth, 4, sigma_highpass, block_depth);
-
-	// Calculate squared differences (combined across channels, using channel weights)
-	for (size_t i = 0; i < pixel_count; i++) 
-	{
-		float diff_r = (float)input[i * 4 + 0] - (float)blurred[i * 4 + 0];
-		float diff_g = (float)input[i * 4 + 1] - (float)blurred[i * 4 + 1];
-		float diff_b = (float)input[i * 4 + 2] - (float)blurred[i * 4 + 2];
-		float diff_a = (float)input[i * 4 + 3] - (float)blurred[i * 4 + 3];
-
-		float diff_sum = 0;
-		diff_sum += diff_r * diff_r; // * channel_weights.lane<0>();
-		diff_sum += diff_g * diff_g; // * channel_weights.lane<1>();
-		diff_sum += diff_b * diff_b; // * channel_weights.lane<2>();
-		diff_sum += diff_a * diff_a; // * channel_weights.lane<3>();
-		squared_diff[i] = diff_sum;
+	// Use fixed tile dimensions based on image type
+	int tile_size_x, tile_size_y, tile_size_z;
+	if (depth <= 1) {
+		// 2D image - use 256x256 tiles
+		tile_size_x = tile_size_y = 256;
+		tile_size_z = 1;
+	} else {
+		// 3D image - use 32x32x32 tiles
+		tile_size_x = tile_size_y = tile_size_z = 32;
 	}
 
-	// Apply second Gaussian blur to the squared differences
-	gaussian_blur_3d(squared_diff, output, width, height, depth, 1, sigma_blur, block_depth);
+	// Calculate number of tiles needed in each dimension
+	int tiles_x = (width + tile_size_x - 1) / tile_size_x;
+	int tiles_y = (height + tile_size_y - 1) / tile_size_y;
+	int tiles_z = (depth + tile_size_z - 1) / tile_size_z;
+	int total_tiles = tiles_x * tiles_y * tiles_z;
 
-	// Map x |-> C1/(C2 + sqrt(x))
-	float C1 = 256.0f;
-	float C2 = 1.0f;
-	float activity_scalar = 4.0f;
-
-	// Create debug output buffer
-	// uint8_t* debug_output = (uint8_t*)malloc(pixel_count);
-	// float max_val = 0;
-
-	// First pass to find maximum value
-	for (size_t i = 0; i < pixel_count; i++) 
+	if (!silentmode) 
 	{
-		float val = C1 / (C2 + activity_scalar * astc::sqrt(output[i]));
-		// max_val = astc::max(max_val, val);
-		output[i] = val;
+		printf("Processing %dx%dx%d image in %dx%dx%d tiles (%d total) using %d threads\n",
+			width, height, depth, tiles_x, tiles_y, tiles_z, total_tiles, thread_count);
 	}
 
-	// Second pass to normalize and convert to 8-bit
-	// for (size_t i = 0; i < pixel_count; i++)
-	//{
-	// float normalized = output[i] / max_val;
-	// debug_output[i] = (uint8_t)(normalized * 255.0f);
-	//}
+	// Mutex and atomic counter for thread synchronization
+	std::mutex queue_mutex;
+	std::atomic<int> tiles_processed{0};
+	std::mutex print_mutex;
 
-	// Save debug output as TGA
-	// For 3D textures, save first slice only
-	// if (depth > 1)
-	//{
-	// jo_write_tga("activity_mask_slice0.tga", debug_output, width, height, 1, 8);
-	//}
-	// else
-	//{
-	// jo_write_tga("activity_mask.tga", debug_output, width, height, 1, 8);
-	//}
+	// Queue of tile coordinates to process
+	std::queue<std::tuple<int, int, int>> work_queue;
 
-	// free(debug_output);
-	delete[] squared_diff;
-	delete[] blurred;
+	// Fill work queue with tile coordinates
+	for (int tz = 0; tz < tiles_z; tz++) 
+	{
+		for (int ty = 0; ty < tiles_y; ty++) 
+		{
+			for (int tx = 0; tx < tiles_x; tx++) 
+			{
+				work_queue.push({tx, ty, tz});
+			}
+		}
+	}
+
+	// For timing individual thread performance
+	std::vector<double> thread_times(thread_count, 0.0);
+
+	// Worker thread function
+	auto process_tiles = [&](int thread_id) 
+	{
+		auto thread_start = std::chrono::high_resolution_clock::now();
+
+		// Allocate thread-local buffers
+		T *tile_input = new T[tile_size_x * tile_size_y * tile_size_z * 4];
+		T *tile_blurred = new T[tile_size_x * tile_size_y * tile_size_z * 4];
+		float *tile_squared_diff = new float[tile_size_x * tile_size_y * tile_size_z];
+		float *tile_output = new float[tile_size_x * tile_size_y * tile_size_z];
+
+		int tiles_by_this_thread = 0;
+
+		while (true) 
+		{
+			// Get next tile coordinates from queue
+			std::tuple<int, int, int> tile_coord;
+			{
+				std::unique_lock<std::mutex> lock(queue_mutex);
+				if (work_queue.empty()) 
+				{
+					// Record thread timing before cleanup
+					auto thread_end = std::chrono::high_resolution_clock::now();
+					std::chrono::duration<double> thread_duration = thread_end - thread_start;
+					thread_times[thread_id] = thread_duration.count();
+
+					// Clean up and exit if no more work
+					delete[] tile_input;
+					delete[] tile_blurred;
+					delete[] tile_squared_diff;
+					delete[] tile_output;
+					return;
+				}
+				tile_coord = work_queue.front();
+				work_queue.pop();
+			}
+
+			int tx = std::get<0>(tile_coord);
+			int ty = std::get<1>(tile_coord);
+			int tz = std::get<2>(tile_coord);
+
+			// Calculate tile bounds
+			int x_start = tx * tile_size_x;
+			int y_start = ty * tile_size_y;
+			int z_start = tz * tile_size_z;
+			int x_end = astc::min(x_start + tile_size_x, width);
+			int y_end = astc::min(y_start + tile_size_y, height);
+			int z_end = astc::min(z_start + tile_size_z, depth);
+			int tile_width = x_end - x_start;
+			int tile_height = y_end - y_start;
+			int tile_depth = z_end - z_start;
+
+			// Copy input data to tile buffer
+			for (int z = 0; z < tile_depth; z++) 
+			{
+				for (int y = 0; y < tile_height; y++) 
+				{
+					for (int x = 0; x < tile_width; x++) 
+					{
+						int src_idx = ((z + z_start) * height * width + (y + y_start) * width + (x + x_start)) * 4;
+						int dst_idx = (z * tile_height * tile_width + y * tile_width + x) * 4;
+						for (int c = 0; c < 4; c++) 
+						{
+							tile_input[dst_idx + c] = input[src_idx + c];
+						}
+					}
+				}
+			}
+
+			// Process the tile
+			gaussian_blur_3d(tile_input, tile_blurred, tile_width, tile_height, tile_depth, 4, sigma_highpass, block_depth);
+
+			// Calculate squared differences
+			size_t tile_pixels = tile_width * tile_height * tile_depth;
+			for (size_t i = 0; i < tile_pixels; i++) 
+			{
+				float diff_r = (float)tile_input[i * 4 + 0] - (float)tile_blurred[i * 4 + 0];
+				float diff_g = (float)tile_input[i * 4 + 1] - (float)tile_blurred[i * 4 + 1];
+				float diff_b = (float)tile_input[i * 4 + 2] - (float)tile_blurred[i * 4 + 2];
+				float diff_a = (float)tile_input[i * 4 + 3] - (float)tile_blurred[i * 4 + 3];
+
+				float diff_sum = 0;
+				(void)channel_weights;
+				diff_sum += diff_r * diff_r;// * channel_weights.lane<0>();
+				diff_sum += diff_g * diff_g;// * channel_weights.lane<1>();
+				diff_sum += diff_b * diff_b;// * channel_weights.lane<2>();
+				diff_sum += diff_a * diff_a;// * channel_weights.lane<3>();
+				tile_squared_diff[i] = diff_sum;
+			}
+
+			// Apply second Gaussian blur
+			gaussian_blur_3d(tile_squared_diff, tile_output, tile_width, tile_height, tile_depth, 1, sigma_blur, block_depth);
+
+			// Map activity values and copy to output
+			float C1 = 256.0f;
+			float C2 = 1.0f;
+			float activity_scalar = 4.0f;
+
+			for (int z = 0; z < tile_depth; z++) 
+			{
+				for (int y =0; y < tile_height; y++) 
+				{
+					for (int x =0; x < tile_width; x++) 
+					{
+						int src_idx = z * tile_height * tile_width + y * tile_width + x;
+						int dst_idx = (z + z_start) * height * width + (y + y_start) * width + (x + x_start);
+						float val = C1 / (C2 + activity_scalar * astc::sqrt(tile_output[src_idx]));
+						output[dst_idx] = val;
+					}
+				}
+			}
+
+			// Update progress
+			int processed = ++tiles_processed;
+			tiles_by_this_thread++;
+
+			// Print progress every 5% or when specifically useful
+			if (!silentmode && processed % astc::max(1, total_tiles / 20) == 0) 
+			{
+				auto current_time = std::chrono::high_resolution_clock::now();
+				std::chrono::duration<double> elapsed = current_time - start_time;
+				double progress = static_cast<double>(processed) / total_tiles;
+				double estimated_total = elapsed.count() / progress;
+				double remaining = estimated_total - elapsed.count();
+
+				std::lock_guard<std::mutex> print_lock(print_mutex);
+				printf("\rProgress: %.1f%% (%d/%d tiles) - %.1fs elapsed, %.1fs remaining",
+					progress * 100.0, processed, total_tiles, 
+					elapsed.count(), remaining);
+				fflush(stdout);
+			}
+		}
+	};
+
+	// Launch worker threads
+	std::vector<std::thread> threads;
+	for (int i = 0; i < thread_count; i++) 
+	{
+		threads.emplace_back(process_tiles, i);
+	}
+
+	// Wait for all threads to complete
+	for (auto& thread : threads) 
+	{
+		thread.join();
+	}
+
+	if (!silentmode) 
+	{
+		auto end_time = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> total_duration = end_time - start_time;
+
+		// Print final statistics
+		printf("\n\nActivity map computation complete:\n");
+		printf("Total time: %.3f seconds\n", total_duration.count());
+		printf("Average time per tile: %.3f ms\n", 
+			(total_duration.count() * 1000.0) / total_tiles);
+		
+		// Print thread statistics
+		double min_thread_time = *std::min_element(thread_times.begin(), thread_times.end());
+		double max_thread_time = *std::max_element(thread_times.begin(), thread_times.end());
+		double avg_thread_time = std::accumulate(thread_times.begin(), thread_times.end(), 0.0) / thread_count;
+		
+		printf("Thread timing - min: %.3fs, max: %.3fs, avg: %.3fs\n", 
+			min_thread_time, max_thread_time, avg_thread_time);
+		printf("Thread time variance: %.1f%%\n", 
+			((max_thread_time - min_thread_time) / avg_thread_time) * 100.0);
+	}
 }
 
 static void convert_activity_map_to_block_texel_weights(
@@ -1974,7 +2128,7 @@ astcenc_error astcenc_optimize_for_lz(
 		reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
 		// Compute activity map
-		compute_activity_map(reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
+		compute_activity_map(reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth, thread_count, silentmode);
 	} 
 	else 
 	{
@@ -1982,7 +2136,7 @@ astcenc_error astcenc_optimize_for_lz(
 		reconstruct_image((float *)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float *)reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		compute_activity_map((float *)reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
+		compute_activity_map((float *)reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth, thread_count, silentmode);
 	}
 
 	// We want per-texel weights for the encoder, not the raw activity map
@@ -2004,3 +2158,4 @@ astcenc_error astcenc_optimize_for_lz(
 
 	return ASTCENC_SUCCESS;
 }
+
