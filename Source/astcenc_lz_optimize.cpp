@@ -444,41 +444,36 @@ static float calculate_bit_cost_simple(
 
 // Calculate Sum of Squared Differences (SSD) with weights for U8 image data
 static inline float calculate_ssd_weighted(
-    const uint8_t *img1,           // first image data
-    const uint8_t *img2,           // second image data
-    int total,                     // total number of pixels * 4 (RGBA)
-    const float *weights,          // Per-pixel weights
-    const vfloat4 &channel_weights // Per-channel importance weights
+    const uint8_t* img1,           // first image data
+    const uint8_t* img2,           // second image data
+    int texel_count,               // total number of texels
+    const float* weights,          // Per-texel weights (one float per texel)
+    const vfloat4& channel_weights // Per-channel importance weights
 ) {
 	vfloat4 sum = vfloat4::zero();
 
-	vint lane_id = vint::lane_id();
-	for(int i = 0; i < total; i+=ASTCENC_SIMD_WIDTH) 
+	for(int i = 0; i < texel_count; i++)
 	{
-		vfloat diff = int_to_float(vint(img1 + i)) - int_to_float(vint(img2 + i));
-		vmask lane_mask = lane_id < vint(total);
-		haccumulate(sum, diff * diff * vfloat(weights + i), lane_mask);
-		lane_id += vint(ASTCENC_SIMD_WIDTH);
+		vfloat4 diff = int_to_float(vint4(img1 + i*4) - vint4(img2 + i*4));
+		haccumulate(sum, diff * diff * vfloat4::load1(weights + i));
 	}
 
 	return dot_s(sum, channel_weights);
 }
 
-// Calculate Mean Relative Squared Signal Error (MRSSE) with weights for float image data
+// Calculate Mean Relative Sum of Squared Errors (MRSSE) with weights for float image data
 static inline float calculate_mrsse_weighted(
-    const float *img1,             // first image data
-    const float *img2,             // second image data
-    int total,                     // total number of pixels * 4 (RGBA)
-    const float *weights,          // Per-pixel weights
-    const vfloat4 &channel_weights // Per-channel importance weights
+    const float* img1,             // first image data
+    const float* img2,             // second image data
+    int texel_count,               // total number of texels
+    const float* weights,          // Per-texel weights (one float per texel)
+    const vfloat4& channel_weights // Per-channel importance weights
 ) {
 	vfloat4 sum = vfloat4::zero();
-	vint lane_id = vint::lane_id();
-	for(int i = 0; i < total; i+=ASTCENC_SIMD_WIDTH) {
-		vfloat diff = vfloat(img1 + i) - vfloat(img2 + i);
-		vmask lane_mask = lane_id < vint(total);
-		haccumulate(sum, diff * diff * vfloat(weights + i), lane_mask);
-		lane_id += vint(ASTCENC_SIMD_WIDTH);
+	for(int i = 0; i < texel_count; i++)
+	{
+		vfloat4 diff = vfloat4(img1 + i*4) - vfloat4(img2 + i*4);
+		haccumulate(sum, diff * diff * vfloat4::load1(weights + i));
 	}
 	return dot_s(sum, channel_weights) * 256.0f;
 }
@@ -830,7 +825,7 @@ static void dual_mtf_pass(
     float lambda,                  // Lambda parameter for rate-distortion optimization
     block_size_descriptor *bsd,    // Block size descriptor
     uint8_t *all_original_decoded, // Pointer to original decoded data
-    float *all_gradients,          // Per-pixel weights
+    float *per_texel_weights,      // Per-texel weights for activity
     vfloat4 channel_weights,       // Channel importance weights
     float effort                   // Optimization effort
 ) {
@@ -918,7 +913,9 @@ static void dual_mtf_pass(
 		// Function to initialize MTF and histogram with random blocks
 		auto seed_structures = [&](mtf_list &mtf_w, mtf_list &mtf_e, histogram &hist, uint32_t seed, size_t start_block, size_t end_block) 
 		{
-			uint32_t rng_state = seed + thread_id;
+			// This needs to be consistently initialized, and we also need the splitting into jobs to
+			// be consistent, to avoid this random sampling introducing non-determinism between runs
+			uint32_t rng_state = seed;
 
 			// Number of random blocks to sample
 			const int num_samples = 64;
@@ -1036,6 +1033,7 @@ static void dual_mtf_pass(
 			size_t rem = block_index % (blocks_x * blocks_y);
 			size_t y = rem / blocks_x;
 			size_t x = rem % blocks_x;
+			size_t texels_per_block = block_width * block_height * block_depth;
 
 			// Get current block data and compute its weight bits
 			uint8_t *current_block = data + block_index * block_size;
@@ -1053,37 +1051,32 @@ static void dual_mtf_pass(
 			}
 
 			// Get pointers to original decoded data and gradients for this block
-			uint8_t *original_decoded = all_original_decoded + block_index * (block_width * block_height * block_depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4));
-			const float *gradients = all_gradients + block_index * (block_width * block_height * block_depth * 4);
+			uint8_t *original_decoded = all_original_decoded + block_index * (texels_per_block * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : sizeof(float)));
+			const float *block_texel_weights = per_texel_weights + block_index * texels_per_block;
 
 			// Function to get or compute MSE for a candidate
-			auto get_or_compute_mse = [&](const int128 &candidate_bits) -> float 
+			auto get_or_compute_mse = [&](const int128& candidate_bits) -> float 
 			{
 				uint32_t hash = hash_128(candidate_bits) & (CACHE_SIZE - 1); // Modulo CACHE_SIZE
+				int block_texel_count = block_width * block_height * block_depth;
 
-				// Check if the candidate is in the cache
-				if (block_cache[hash].valid && block_cache[hash].encoded.is_equal(candidate_bits)) 
+				// If our current cached block doesn't match, decode first
+				if (!block_cache[hash].valid || !block_cache[hash].encoded.is_equal(candidate_bits))
 				{
-					// Compute MSE using cached decoded data
-					if (block_type == ASTCENC_TYPE_U8) 
-					{
-						return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
-					}
-					return calculate_mrsse_weighted((float *)original_decoded, (float *)block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
+					astc_decompress_block(*bsd, candidate_bits.bytes, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
+					block_cache[hash].encoded = candidate_bits;
+					block_cache[hash].valid = true;
 				}
 
-				// If not in cache, compute and cache the result
-
-				// Decode and compute MSE
-				astc_decompress_block(*bsd, candidate_bits.bytes, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
-				block_cache[hash].encoded = candidate_bits;
-				block_cache[hash].valid = true;
-
+				// Compute error using cached decoded data
 				if (block_type == ASTCENC_TYPE_U8) 
 				{
-					return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
+					return calculate_ssd_weighted(original_decoded, block_cache[hash].decoded, block_texel_count, block_texel_weights, channel_weights);
 				}
-				return calculate_mrsse_weighted((float *)original_decoded, (float *)block_cache[hash].decoded, block_width * block_height * block_depth * 4, gradients, channel_weights);
+				else
+				{
+					return calculate_mrsse_weighted((float *)original_decoded, (float *)block_cache[hash].decoded, block_texel_count, block_texel_weights, channel_weights);
+				}
 			};
 
 			// Decode the original block to compute initial MSE
@@ -1619,7 +1612,7 @@ template <typename T> static void gaussian_blur_3d(
 	delete[] temp2;
 }
 
-template <typename T> static void high_pass_filter_squared_blurred(
+template <typename T> static void compute_activity_map(
 	const T *input, 
 	float *output, 
 	int width, 
@@ -1700,9 +1693,9 @@ template <typename T> static void high_pass_filter_squared_blurred(
 	delete[] blurred;
 }
 
-static void high_pass_to_block_gradients(
-	const float *high_pass_image, 
-	float *block_gradients, 
+static void convert_activity_map_to_block_texel_weights(
+	const float *activity_map,
+	float *block_texel_weights,
 	int width, 
 	int height, 
 	int depth, 
@@ -1723,8 +1716,8 @@ static void high_pass_to_block_gradients(
 		{
 			for (int x = 0; x < blocks_x; x++) 
 			{
-				int block_index = (z * blocks_y * blocks_x) + (y * blocks_x) + x;
-				float *block_data = block_gradients + block_index * block_width * block_height * block_depth * 4;
+				int block_index = (z * blocks_y + y) * blocks_x + x;
+				float *block_data = block_texel_weights + block_index * block_width * block_height * block_depth;
 
 				// For each texel in the block
 				for (int bz = 0; bz < block_depth; bz++) 
@@ -1736,28 +1729,20 @@ static void high_pass_to_block_gradients(
 							int image_x = x * block_width + bx;
 							int image_y = y * block_height + by;
 							int image_z = z * block_depth + bz;
+							int block_texel_index = (bz * block_height + by) * block_width + bx;
 
 							// Handle edge cases where block extends beyond image bounds
 							if (image_x < width && image_y < height && image_z < depth) 
 							{
-								int image_index = (image_z * height * width + image_y * width + image_x);
-								int block_texel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
+								int image_index = (image_z * height + image_y) * width + image_x;
 
-								// Copy high-pass value to all 4 channels of block gradients
-								float gradient = high_pass_image[image_index];
-								block_data[block_texel_index + 0] = gradient;
-								block_data[block_texel_index + 1] = gradient;
-								block_data[block_texel_index + 2] = gradient;
-								block_data[block_texel_index + 3] = gradient;
+								float activity_weight = activity_map[image_index];
+								block_data[block_texel_index] = activity_weight;
 							} 
 							else 
 							{
-								// For texels outside image bounds, use zero gradient
-								int block_texel_index = (bz * block_height * block_width + by * block_width + bx) * 4;
-								block_data[block_texel_index + 0] = 0.0f;
-								block_data[block_texel_index + 1] = 0.0f;
-								block_data[block_texel_index + 2] = 0.0f;
-								block_data[block_texel_index + 3] = 0.0f;
+								// For texels outside image bounds, use zero weight
+								block_data[block_texel_index] = 0.0f;
 							}
 						}
 					}
@@ -1980,16 +1965,16 @@ astcenc_error astcenc_optimize_for_lz(
 	// Allocate memory for the reconstructed image
 	size_t image_size = width * height * depth * 4 * (block_type == ASTCENC_TYPE_U8 ? 1 : 4);
 	uint8_t *reconstructed_image = new uint8_t[image_size];
-	float *high_pass_image = new float[width * height * depth]; // Single channel
-	float *block_gradients = new float[num_blocks * block_width * block_height * block_depth * 4];
+	float *activity_map = new float[width * height * depth]; // Single channel
+	float *block_texel_weights = new float[num_blocks * block_width * block_height * block_depth]; // One value per texel
 
 	if (block_type == ASTCENC_TYPE_U8) 
 	{
 		// Reconstruct the image from all_original_decoded
 		reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
-		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred(reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
+		// Compute activity map
+		compute_activity_map(reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
 	} 
 	else 
 	{
@@ -1997,16 +1982,17 @@ astcenc_error astcenc_optimize_for_lz(
 		reconstruct_image((float *)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float *)reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		high_pass_filter_squared_blurred((float *)reconstructed_image, high_pass_image, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
+		compute_activity_map((float *)reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth);
 	}
 
-	// Convert high-pass filtered image back to block gradients
-	high_pass_to_block_gradients(high_pass_image, block_gradients, width, height, depth, block_width, block_height, block_depth);
+	// We want per-texel weights for the encoder, not the raw activity map
+	convert_activity_map_to_block_texel_weights(activity_map, block_texel_weights, width, height, depth, block_width, block_height, block_depth);
+	delete[] activity_map;
 
-	dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights_vec, effort);
+	dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_texel_weights, channel_weights_vec, effort);
 	if (effort >= 5) 
 	{
-		dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_gradients, channel_weights_vec, effort);
+		dual_mtf_pass(thread_count, silentmode, data, original_blocks, exhaustive_data, data_len, blocks_x, blocks_y, blocks_z, block_width, block_height, block_depth, block_type, lambda, bsd, all_original_decoded, block_texel_weights, channel_weights_vec, effort);
 	}
 
 	// Clean up
@@ -2014,8 +2000,7 @@ astcenc_error astcenc_optimize_for_lz(
 	delete[] all_original_decoded;
 	delete[] original_blocks;
 	delete[] reconstructed_image;
-	delete[] high_pass_image;
-	delete[] block_gradients;
+	delete[] block_texel_weights;
 
 	return ASTCENC_SUCCESS;
 }
