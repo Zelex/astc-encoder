@@ -35,30 +35,6 @@ levels.
 #include <chrono>
 #include <numeric>
 
-// Add platform-specific aligned allocation macros
-#if defined(_MSC_VER)
-	// Windows/MSVC
-	#include <malloc.h>
-	#define ASTC_ALIGNED_MALLOC(size, align) _aligned_malloc(size, align)
-	#define ASTC_ALIGNED_FREE(ptr) _aligned_free(ptr)
-#elif defined(__APPLE__) || defined(__linux__)
-	// macOS, iOS, or Linux with C11 support
-	#define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc(align, (size + align - 1) & ~(align - 1))
-	#define ASTC_ALIGNED_FREE(ptr) free(ptr)
-#else
-	// Fallback for other platforms - you might want to add more platform-specific cases
-	#include <cstdlib>
-	static inline void* aligned_alloc_fallback(size_t align, size_t size) 
-	{
-		void* ptr = nullptr;
-		if (posix_memalign(&ptr, align, size) != 0) 
-			return nullptr;
-		return ptr;
-	}
-	#define ASTC_ALIGNED_MALLOC(size, align) aligned_alloc_fallback(align, size)
-	#define ASTC_ALIGNED_FREE(ptr) free(ptr)
-#endif
-
 #include "astcenc.h"
 #include "astcenc_internal.h"
 #include "astcenc_internal_entry.h"
@@ -89,7 +65,6 @@ struct int128
 	union 
 	{
 		uint64_t uint64[2]; // Access as two 64-bit integers
-		uint32_t uint32[4]; // Access as four 32-bit integers
 		uint8_t bytes[16];  // Access as 16 bytes
 	};
 
@@ -127,49 +102,61 @@ struct int128
 		return result;
 	}
 
-	// Bitwise AND operation
-	int128 bitwise_and(
-		const int128 &other
-	) const {
+	/**
+	 * @brief Bitwise AND
+	 */
+	int128 operator &(const int128& other) const
+	{
 		int128 result;
 		result.uint64[0] = uint64[0] & other.uint64[0];
 		result.uint64[1] = uint64[1] & other.uint64[1];
 		return result;
 	}
 
-	// Bitwise OR operation
-	int128 bitwise_or(
-		const int128 &other
-	) const {
+	/**
+	 * @brief Bitwise OR
+	 */
+	int128 operator |(const int128& other) const
+	{
 		int128 result;
 		result.uint64[0] = uint64[0] | other.uint64[0];
 		result.uint64[1] = uint64[1] | other.uint64[1];
 		return result;
 	}
 
-	// Equality check
-	bool is_equal(
-		const int128 &other
-	) const {
-		return uint64[0] == other.uint64[0] && uint64[1] == other.uint64[1];
-	}
-
-	// Constructor from integer value
-	static int128 from_int(
-		long long val
-	) {
-		int128 result;
-		result.uint64[0] = val;
-		result.uint64[1] = val < 0 ? -1LL : 0;
-		return result;
-	}
-
-	// Bitwise NOT operation
-	int128 bitwise_not(
-	) const {
+	/**
+	 * @brief Bitwise NOT
+	 */
+	int128 operator ~() const
+	{
 		int128 result;
 		result.uint64[0] = ~uint64[0];
 		result.uint64[1] = ~uint64[1];
+		return result;
+	}
+
+	/**
+	  * @brief Equality comparison
+	  */
+	bool operator ==(const int128& other) const
+	{
+		return uint64[0] == other.uint64[0] && uint64[1] == other.uint64[1];
+	}
+
+	/**
+	  * @brief Inequality comparison
+	  */
+	bool operator !=(const int128& other) const
+	{
+		return !(*this == other);
+	}
+
+	// Constructor from integer value
+	static int128 from_int(int64_t val)
+	{
+		int128 result;
+		result.uint64[0] = static_cast<uint64_t>(val);
+		result.uint64[1] = val < 0 ? ~uint64_t(0) : 0;
 		return result;
 	}
 };
@@ -360,23 +347,23 @@ static int mtf_search(
 	const int128 &mask
 ) {
 	// Pre-compute the masked value once for efficiency
-	int128 masked_value = value.bitwise_and(mask);
+	int128 masked_value = value & mask;
 
 	// Search in groups of 4 for better performance
 	int i = 0;
 	for (; i + 3 < mtf->size; i += 4) 
 	{
 		// Check if any of these 4 entries match
-		bool match0 = mtf->list[i + 0].bitwise_and(mask).is_equal(masked_value);
+		bool match0 = (mtf->list[i + 0] & mask) == masked_value;
 		if (match0)
 			return i;
-		bool match1 = mtf->list[i + 1].bitwise_and(mask).is_equal(masked_value);
+		bool match1 = (mtf->list[i + 1] & mask) == masked_value;
 		if (match1)
 			return i + 1;
-		bool match2 = mtf->list[i + 2].bitwise_and(mask).is_equal(masked_value);
+		bool match2 = (mtf->list[i + 2] & mask) == masked_value;
 		if (match2)
 			return i + 2;
-		bool match3 = mtf->list[i + 3].bitwise_and(mask).is_equal(masked_value);
+		bool match3 = (mtf->list[i + 3] & mask) == masked_value;
 		if (match3)
 			return i + 3;
 	}
@@ -384,7 +371,7 @@ static int mtf_search(
 	// Handle remaining entries
 	for (; i < mtf->size; i++) 
 	{
-		if (mtf->list[i].bitwise_and(mask).is_equal(masked_value))
+		if ((mtf->list[i] & mask) == masked_value)
 			return i;
 	}
 
@@ -430,7 +417,7 @@ static float calculate_bit_cost_simple(
 {
 	// Case 1: Both parts need literal encoding
 	if (mtf_value_1 == -1 && mtf_value_2 == -1)
-		return histo_cost(histogram, literal_value, mask_1.bitwise_or(mask_2));
+		return histo_cost(histogram, literal_value, mask_1 | mask_2);
 
 	// Case 2: first part needs literal encoding
 	if (mtf_value_1 == -1)
@@ -482,17 +469,14 @@ static inline float calculate_mrsse_weighted(
 
 // Decompress an ASTC block to either U8 or float output
 static void astc_decompress_block(
-	const block_size_descriptor &bsd, // Block size descriptor
-	const uint8_t *block_ptr,         // Block data pointer
-	uint8_t *output,                  // Output buffer
-	int block_width,                  // Block dimensions
-	int block_height,
-	int block_depth,
+	const block_size_descriptor& bsd, // Block size descriptor
+	const uint8_t* block_ptr,         // Block data pointer
+	uint8_t* output,                  // Output buffer
 	int block_type // Block type (ASTCENC_TYPE_U8 or ASTCENC_TYPE_F32)
 ) {
 	// Initialize image block structure
 	image_block blk{};
-	blk.texel_count = static_cast<uint8_t>(block_width * block_height * block_depth);
+	blk.texel_count = bsd.texel_count;
 	blk.data_min = vfloat4::zero();
 	blk.data_max = vfloat4(1.0f, 1.0f, 1.0f, 1.0f);
 	blk.grayscale = false;
@@ -548,223 +532,6 @@ static void astc_decompress_block(
 	}
 }
 
-// Get the number of bits used for weights in an ASTC block
-int get_weight_bits(
-	uint8_t *data, 
-	int block_width, 
-	int block_height, 
-	int block_depth
-) {
-	// Extract block mode from first two bytes
-	uint16_t mode = data[0] | (data[1] << 8);
-
-	// Check for special block types
-	if ((mode & 0x1ff) == 0x1fc)
-		return 0; // void-extent block
-	if ((mode & 0x00f) == 0)
-		return 0; // Reserved block mode
-
-	// Extract individual bits from the mode
-	uint8_t b01 = (mode >> 0) & 3;   // Bits 0-1
-	uint8_t b23 = (mode >> 2) & 3;   // Bits 2-3
-	uint8_t p0 = (mode >> 4) & 1;    // Bit 4
-	uint8_t b56 = (mode >> 5) & 3;   // Bits 5-6
-	uint8_t b78 = (mode >> 7) & 3;   // Bits 7-8
-	uint8_t P = (mode >> 9) & 1;     // Bit 9
-	uint8_t Dp = (mode >> 10) & 1;   // Bit 10
-	uint8_t b9_10 = (mode >> 9) & 3; // Bits 9-10
-	uint8_t p12;
-
-	// Variables for block dimensions
-	int W = 0, H = 0, D = 0;
-
-	// Handle 2D blocks
-	if (block_depth <= 1) 
-	{
-		// 2D
-		D = 1;
-		if ((mode & 0x1c3) == 0x1c3)
-			return 0; // Reserved*
-
-		if (b01 == 0) 
-		{
-			p12 = b23;
-			// Determine block dimensions based on mode bits
-			switch (b78) 
-			{
-			case 0:
-				W = 12;
-				H = 2 + b56;
-				break;
-			case 1:
-				W = 2 + b56;
-				H = 12;
-				break;
-			case 2:
-				W = 6 + b56;
-				H = 6 + b9_10;
-				Dp = 0;
-				P = 0;
-				break;
-			case 3:
-				if (b56 == 0) 
-				{
-					W = 6;
-					H = 10;
-				} 
-				else if (b56 == 1) 
-				{
-					W = 10;
-					H = 6;
-				} 
-				else 
-				{
-					/* NOTREACHED */
-					// assert(0);
-					return 0;
-				}
-				break;
-			}
-		} else {
-			p12 = b01;
-			// Alternative block dimensions calculations
-			switch (b23) {
-			case 0:
-				W = 4 + b78;
-				H = 2 + b56;
-				break;
-			case 1:
-				W = 8 + b78;
-				H = 2 + b56;
-				break;
-			case 2:
-				W = 2 + b56;
-				H = 8 + b78;
-				break;
-			case 3:
-				if (b78 & 2) 
-				{
-					W = 2 + (b78 & 1);
-					H = 6 + b56;
-				} 
-				else 
-				{
-					W = 2 + b56;
-					H = 2 + (b78 & 1);
-				}
-				break;
-			}
-		}
-	} else {
-		// Handle 3D blocks
-		if ((mode & 0x1e3) == 0x1e3)
-			return 0; // Reserved*
-		if (b01 != 0) 
-		{
-			p12 = b01;
-			// 3D block dimensions
-			W = 2 + b56;
-			H = 2 + b78;
-			D = 2 + b23;
-		} 
-		else 
-		{
-			p12 = b23;
-			switch (b78) 
-			{
-			case 0:
-				W = 6;
-				H = 2 + b9_10;
-				D = 2 + b56;
-				break;
-			case 1:
-				W = 2 + b56;
-				H = 6;
-				D = 2 + b9_10;
-				break;
-			case 2:
-				W = 2 + b56;
-				H = 2 + b9_10;
-				D = 6;
-				break;
-			case 3:
-				switch (b56) 
-				{
-				case 0:
-					W = 6;
-					H = 2;
-					D = 2;
-					break;
-				case 1:
-					W = 2;
-					H = 6;
-					D = 2;
-					break;
-				case 2:
-					W = 2;
-					H = 2;
-					D = 6;
-					break;
-				case 3:
-					/* NOTREACHED*/
-					assert(0);
-					return 0; // Invalid mode
-				}
-				break;
-			}
-		}
-	}
-
-	// Validate block dimensions
-	if (W > block_width || H > block_height || D > block_depth)
-		return 0;
-
-	// Calculate weight bits based on encoding parameters
-	uint8_t p = (p12 << 1) | p0;
-	int trits = 0, quints = 0, bits = 0;
-
-	if (!P) 
-	{
-		// Non-packed mode weight bit patterns
-		int t[8] = {-1, -1, 0, 1, 0, 0, 1, 0}; // trit patterns
-		int q[8] = {-1, -1, 0, 0, 0, 1, 0, 0}; // quint patterns
-		int b[8] = {-1, -1, 1, 0, 2, 0, 1, 3}; // bit patterns
-		trits = t[p];
-		quints = q[p];
-		bits = b[p];
-	} 
-	else 
-	{
-		// Packed mode weight bit patterns
-		int t[8] = {-1, -1, 0, 1, 0, 0, 1, 0};
-		int q[8] = {-1, -1, 1, 0, 0, 1, 0, 0};
-		int b[8] = {-1, -1, 1, 2, 4, 2, 3, 5};
-		trits = t[p];
-		quints = q[p];
-		bits = b[p];
-	}
-
-	// Calculate total number of weights
-	int num_weights = W * H * D;
-	if (Dp)
-		num_weights *= 2; // Dual plane mode doubles weights
-
-	// Check weight count limit
-	if (num_weights > 64)
-		return 0;
-
-	// Calculate total weight bits
-	int weight_bits = (num_weights * 8 * trits + 4) / 5 +  // Trit bits
-	                  (num_weights * 7 * quints + 2) / 3 + // Quint bits
-	                  num_weights * bits;                  // Plain bits
-
-	// Check weight bit range
-	if (weight_bits < 24 || weight_bits > 96)
-		return 0;
-
-	return (uint8_t)weight_bits;
-}
-
 // Structure to define a work item for thread processing
 struct work_item 
 {
@@ -782,7 +549,7 @@ static inline void calculate_masks(
 	// Create weight mask by shifting 1s into position
 	weights_mask = int128::from_int(-1).shift_left(128 - weight_bits);
 	// Endpoints mask is complement of weights mask
-	endpoints_mask = weights_mask.bitwise_not();
+	endpoints_mask = ~weights_mask;
 }
 
 // Get weight bits from a block using pre-computed lookup table
@@ -884,14 +651,19 @@ static void dual_mtf_pass(
 		}
 	};
 
-	// Initialize weight bits table
+	// Initialize weight bits table from BSD
 	uint8_t *weight_bits_tbl = new uint8_t[2048];
-	for (size_t i = 0; i < 2048; ++i) 
+	for (uint16_t mode = 0; mode < 2048; ++mode) 
 	{
-		uint8_t block[16];
-		block[0] = (i & 255);
-		block[1] = ((i >> 8) & 255);
-		weight_bits_tbl[i] = (uint8_t)get_weight_bits(block, block_width, block_height, block_depth);
+		// If this is a valid block mode, use the cached info, else just plug in 0
+		if (bsd->block_mode_packed_index[mode] != BLOCK_BAD_BLOCK_MODE)
+		{
+			weight_bits_tbl[mode] = bsd->get_block_mode(mode).weight_bits;
+		}
+		else
+		{
+			weight_bits_tbl[mode] = 0;
+		}
 	}
 
 	// Thread synchronization primitives
@@ -949,7 +721,7 @@ static void dual_mtf_pass(
 				// Update structures
 				mtf_encode(&mtf_w, block_bits, weights_mask);
 				mtf_encode(&mtf_e, block_bits, endpoints_mask);
-				histo_update(&hist, block_bits, weights_mask.bitwise_or(endpoints_mask));
+				histo_update(&hist, block_bits, weights_mask | endpoints_mask);
 			}
 		};
 
@@ -1063,9 +835,9 @@ static void dual_mtf_pass(
 				int block_texel_count = block_width * block_height * block_depth;
 
 				// If our current cached block doesn't match, decode first
-				if (!block_cache[hash].valid || !block_cache[hash].encoded.is_equal(candidate_bits))
+				if (!block_cache[hash].valid || block_cache[hash].encoded != candidate_bits)
 				{
-					astc_decompress_block(*bsd, candidate_bits.bytes, block_cache[hash].decoded, block_width, block_height, block_depth, block_type);
+					astc_decompress_block(*bsd, candidate_bits.bytes, block_cache[hash].decoded, block_type);
 					block_cache[hash].encoded = candidate_bits;
 					block_cache[hash].valid = true;
 				}
@@ -1202,7 +974,7 @@ static void dual_mtf_pass(
 
 				int128 weights_mask, endpoints_mask;
 				calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
-				int128 temp_bits = candidate_weights.bitwise_and(weights_mask);
+				int128 temp_bits = candidate_weights & weights_mask;
 
 				// Try every endpoint candidate that matches in weight bits
 				for (int m = 0; m < endpoints_count; m++) 
@@ -1210,7 +982,7 @@ static void dual_mtf_pass(
 					int endpoint_weight_bits = best_endpoints[m].weight_bits;
 					if (weights_weight_bits == endpoint_weight_bits && weights_weight_bits != 0) 
 					{
-						int128 combined_bits = temp_bits.bitwise_or(best_endpoints[m].bits.bitwise_and(endpoints_mask));
+						int128 combined_bits = temp_bits | (best_endpoints[m].bits & endpoints_mask);
 						float mse = get_or_compute_mse(combined_bits);
 						float bit_cost = calculate_bit_cost_simple(k, best_endpoints[m].mtf_position, combined_bits, weights_mask, endpoints_mask, &hist);
 						float rd_cost = mse + lambda * bit_cost;
@@ -1244,7 +1016,7 @@ static void dual_mtf_pass(
 					// Then try the candidate_endpoints with candidate weights weights
 					if (endpoints_weight_bits != 0) 
 					{
-						int128 temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(candidate_endpoints.bitwise_and(endpoints_mask));
+						int128 temp_bits = (candidate_weights & weights_mask) | (candidate_endpoints & endpoints_mask);
 						float mse = get_or_compute_mse(temp_bits);
 						rd_cost = mse + lambda * calculate_bit_cost_simple(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &hist);
 						if (rd_cost < best_rd_cost) 
@@ -1259,7 +1031,7 @@ static void dual_mtf_pass(
 					{
 						calculate_masks(weights_weight_bits, weights_mask, endpoints_mask);
 
-						int128 temp_bits = candidate_weights.bitwise_and(weights_mask).bitwise_or(candidate_endpoints.bitwise_and(endpoints_mask));
+						int128 temp_bits = (candidate_weights & weights_mask) | (candidate_endpoints & endpoints_mask);
 						float mse = get_or_compute_mse(temp_bits);
 						rd_cost = mse + lambda * calculate_bit_cost_simple(best_weights[i].mtf_position, best_endpoints[j].mtf_position, temp_bits, weights_mask, endpoints_mask, &hist);
 						if (rd_cost < best_rd_cost) 
@@ -1272,7 +1044,7 @@ static void dual_mtf_pass(
 			}
 
 			// If we found a better match, update the current block
-			if (!best_match.is_equal(current_bits))
+			if (best_match != current_bits)
 				memcpy(current_block, best_match.bytes, 16);
 
 			// Recalculate masks for the best match
@@ -1285,9 +1057,9 @@ static void dual_mtf_pass(
 			int best_mtf_endpoints_pos = mtf_search(&mtf_endpoints, best_match, best_endpoints_mask);
 			int128 literal_mask = int128::from_int(0);
 			if (best_mtf_weights_pos == -1)
-				literal_mask = literal_mask.bitwise_or(best_weights_mask);
+				literal_mask = literal_mask | best_weights_mask;
 			if (best_mtf_endpoints_pos == -1)
-				literal_mask = literal_mask.bitwise_or(best_endpoints_mask);
+				literal_mask = literal_mask | best_endpoints_mask;
 
 			// Update statistics
 			histo_update(&hist, best_match, literal_mask);
@@ -1623,6 +1395,8 @@ template <typename T> static void compute_activity_map(
 	float sigma_highpass, 
 	float sigma_blur, 
 	const vfloat4 &channel_weights, 
+	int block_width,
+	int block_height,
 	int block_depth,
 	int thread_count,
 	bool silentmode
@@ -1635,11 +1409,14 @@ template <typename T> static void compute_activity_map(
 	int tile_size_x, tile_size_y, tile_size_z;
 	if (depth <= 1) {
 		// 2D image - use 256x256 tiles
-		tile_size_x = tile_size_y = 256;
+		tile_size_x = 256 / block_width * block_width;
+		tile_size_y = 256 / block_height * block_height;
 		tile_size_z = 1;
 	} else {
 		// 3D image - use 32x32x32 tiles
-		tile_size_x = tile_size_y = tile_size_z = 32;
+		tile_size_x = 32 / block_width * block_width;
+		tile_size_y = 32 / block_height * block_height;
+		tile_size_z = 32 / block_depth * block_depth;
 	}
 
 	// Calculate number of tiles needed in each dimension
@@ -2002,8 +1779,7 @@ astcenc_error astcenc_optimize_for_lz(
 	lambda *= lambda_scale;
 
 	// Initialize block_size_descriptor once
-	block_size_descriptor *bsd = reinterpret_cast<block_size_descriptor*>(
-		ASTC_ALIGNED_MALLOC(sizeof(block_size_descriptor), ASTCENC_VECALIGN));
+	block_size_descriptor* bsd = aligned_malloc<block_size_descriptor>(sizeof(block_size_descriptor), ASTCENC_VECALIGN);
 	if (!bsd) 
 	{
 		// Handle allocation failure
@@ -2128,7 +1904,7 @@ astcenc_error astcenc_optimize_for_lz(
 		reconstruct_image(all_original_decoded, width, height, depth, block_width, block_height, block_depth, reconstructed_image);
 
 		// Compute activity map
-		compute_activity_map(reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth, thread_count, silentmode);
+		compute_activity_map(reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_width, block_height, block_depth, thread_count, silentmode);
 	} 
 	else 
 	{
@@ -2136,7 +1912,7 @@ astcenc_error astcenc_optimize_for_lz(
 		reconstruct_image((float *)all_original_decoded, width, height, depth, block_width, block_height, block_depth, (float *)reconstructed_image);
 
 		// Apply high-pass filter with squared differences and additional blur
-		compute_activity_map((float *)reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_depth, thread_count, silentmode);
+		compute_activity_map((float *)reconstructed_image, activity_map, width, height, depth, 2.2f, 1.25f, channel_weights_vec, block_width, block_height, block_depth, thread_count, silentmode);
 	}
 
 	// We want per-texel weights for the encoder, not the raw activity map
@@ -2150,7 +1926,7 @@ astcenc_error astcenc_optimize_for_lz(
 	}
 
 	// Clean up
-	ASTC_ALIGNED_FREE(bsd);
+	aligned_free(bsd);
 	delete[] all_original_decoded;
 	delete[] original_blocks;
 	delete[] reconstructed_image;
