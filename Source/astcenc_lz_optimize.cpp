@@ -165,8 +165,8 @@ struct int128
 // Used for entropy coding and compression ratio estimation
 struct histogram 
 {
-	int h[256]; // Frequency count for each byte
-	int size;   // Total count
+	unsigned int h[256]; // Frequency count for each byte
+	unsigned int size;   // Total count
 };
 
 // Move-To-Front (MTF) list structure for maintaining recently used values
@@ -174,8 +174,8 @@ struct histogram
 struct mtf_list 
 {
 	int128 list[MAX_MTF_SIZE]; // List of recently used values
-	int size;                  // Current size
-	int max_size;              // Maximum size
+	unsigned int size;                  // Current size
+	unsigned int max_size;              // Maximum size
 };
 
 // Cache entry for storing decoded block results
@@ -333,7 +333,7 @@ static float histo_cost(
 // Initialize Move-To-Front list with given maximum size
 static void mtf_init(
 	mtf_list *mtf, 
-	int max_size
+	unsigned int max_size
 ) {
 	mtf->size = 0;
 	mtf->max_size = max_size > MAX_MTF_SIZE ? MAX_MTF_SIZE : max_size;
@@ -350,7 +350,7 @@ static int mtf_search(
 	int128 masked_value = value & mask;
 
 	// Search in groups of 4 for better performance
-	int i = 0;
+	unsigned int i = 0;
 	for (; i + 3 < mtf->size; i += 4) 
 	{
 		// Check if any of these 4 entries match
@@ -882,16 +882,16 @@ static void dual_mtf_pass(
 			};
 			candidate best_weights[BEST_CANDIDATES_COUNT];
 			candidate best_endpoints[BEST_CANDIDATES_COUNT];
-			int endpoints_count = 0;
-			int weights_count = 0;
+			unsigned int endpoints_count = 0;
+			unsigned int weights_count = 0;
 
 			// Function to add a new candidate to the best candidates list
-			auto add_candidate = [&](candidate *candidates, int &count, const int128 &bits, float rd_cost, int mtf_position) 
+			auto add_candidate = [&](candidate *candidates, unsigned int &count, const int128 &bits, float rd_cost, int mtf_position) 
 			{
 				// Check if candidate should be added
 				if (count < BEST_CANDIDATES_COUNT || rd_cost < candidates[BEST_CANDIDATES_COUNT - 1].rd_cost) 
 				{
-					int insert_pos = count < BEST_CANDIDATES_COUNT ? count : BEST_CANDIDATES_COUNT - 1;
+					unsigned int insert_pos = count < BEST_CANDIDATES_COUNT ? count : BEST_CANDIDATES_COUNT - 1;
 
 					// Find the position to insert
 					while (insert_pos > 0 && rd_cost < candidates[insert_pos - 1].rd_cost) 
@@ -946,7 +946,7 @@ static void dual_mtf_pass(
 			add_candidate(best_endpoints, endpoints_count, ref2_bits, ref2_rd_cost, mtf_endpoints_pos_ref2);
 
 			// Find best endpoint candidates
-			for (int k = 0; k < mtf_endpoints.size; k++) 
+			for (unsigned int k = 0; k < mtf_endpoints.size; k++) 
 			{
 				int128 candidate_endpoints = mtf_endpoints.list[k];
 				int endpoints_weight_bits = get_weight_bits(candidate_endpoints.bytes, weight_bits_tbl);
@@ -967,7 +967,7 @@ static void dual_mtf_pass(
 			}
 
 			// Find best weight candidates
-			for (int k = 0; k < mtf_weights.size; k++) 
+			for (unsigned int k = 0; k < mtf_weights.size; k++) 
 			{
 				int128 candidate_weights = mtf_weights.list[k];
 				int weights_weight_bits = get_weight_bits(candidate_weights.bytes, weight_bits_tbl);
@@ -977,7 +977,7 @@ static void dual_mtf_pass(
 				int128 temp_bits = candidate_weights & weights_mask;
 
 				// Try every endpoint candidate that matches in weight bits
-				for (int m = 0; m < endpoints_count; m++) 
+				for (unsigned int m = 0; m < endpoints_count; m++) 
 				{
 					int endpoint_weight_bits = best_endpoints[m].weight_bits;
 					if (weights_weight_bits == endpoint_weight_bits && weights_weight_bits != 0) 
@@ -994,9 +994,9 @@ static void dual_mtf_pass(
 			}
 
 			// Search through combinations of best candidates
-			for (int i = 0; i < weights_count; i++) 
+			for (unsigned int i = 0; i < weights_count; i++) 
 			{
-				for (int j = 0; j < endpoints_count; j++) 
+				for (unsigned int j = 0; j < endpoints_count; j++) 
 				{
 					int128 candidate_endpoints = best_endpoints[j].bits;
 					int128 candidate_weights = best_weights[i].bits;
@@ -1337,7 +1337,7 @@ static void apply_1d_convolution_3d(
 
 				T *out_pixel = output + (z * height * width + y * width + x) * channels;
 				for (int c = 0; c < channels; c++)
-					if (std::is_same_v<T, uint8_t>)
+					if (std::is_same<T, uint8_t>::value)
 						out_pixel[c] = (uint8_t)(sum[c] + 0.5f);
 					else
 						out_pixel[c] = (T)sum[c];
@@ -1465,8 +1465,6 @@ template <typename T> static void compute_activity_map(
 		float *tile_squared_diff = new float[tile_size_x * tile_size_y * tile_size_z];
 		float *tile_output = new float[tile_size_x * tile_size_y * tile_size_z];
 
-		int tiles_by_this_thread = 0;
-
 		while (true) 
 		{
 			// Get next tile coordinates from queue
@@ -1568,7 +1566,6 @@ template <typename T> static void compute_activity_map(
 
 			// Update progress
 			int processed = ++tiles_processed;
-			tiles_by_this_thread++;
 
 			// Print progress every 5% or when specifically useful
 			if (!silentmode && processed % astc::max(1, total_tiles / 20) == 0) 

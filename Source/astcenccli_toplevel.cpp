@@ -2015,7 +2015,8 @@ int astcenc_main(
 	// Initialize cli_config_options with default values
 	cli_config_options cli_config { 0, 1, 1, false, false, false, -10, 10,
 		{ ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A },
-		{ ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A } };
+		{ ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A },
+		false, 0.0f, 0.0f };
 
 	error = edit_astcenc_config(argc, argv, operation, cli_config, config);
 	if (error)
@@ -2306,9 +2307,6 @@ int astcenc_main(
 			{
 				printf("Optimizing for LZ compression\n");
 			}
-			int blocks_x = (image_uncomp_in->dim_x + config.block_x - 1) / config.block_x;
-			int blocks_y = (image_uncomp_in->dim_y + config.block_y - 1) / config.block_y;
-			int blocks_z = (image_uncomp_in->dim_z + config.block_z - 1) / config.block_z;
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
 			float channel_weights[4] = {config.cw_r_weight, config.cw_g_weight, config.cw_b_weight, config.cw_a_weight};
 			astcenc_optimize_for_lz(image_uncomp_in, image_uncomp_in_component_count, image_uncomp_in_is_hdr, &work.swizzle, buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo, cli_config.lz_optimize_effort);
