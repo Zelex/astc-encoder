@@ -2249,6 +2249,10 @@ int astcenc_main(
 			astcenc_config thorough_config;
 			astcenc_context* thorough_context;
 			astcenc_config_init(ASTCENC_PRF_LDR, config.block_x, config.block_y, config.block_z, ASTCENC_PRE_THOROUGH, 0, &thorough_config);
+			if ((!cli_config.silentmode) && isatty(stdoutfno))
+			{
+				thorough_config.progress_callback = progress_emitter;
+			}
 			astcenc_context_alloc(&thorough_config, cli_config.thread_count, &thorough_context);
 
 			buffer_exhaustive = new uint8_t[buffer_size];
@@ -2261,22 +2265,32 @@ int astcenc_main(
 			}
 
 			double start_thorough_time = get_time();
-			for (unsigned int i = 0; i < cli_config.repeat_count; i++)
+			if (config.progress_callback)
 			{
-				if (cli_config.thread_count > 1)
-				{
-					launch_threads("Thorough Compression", cli_config.thread_count, compression_workload_runner, &work);
-				}
-				else
-				{
-					work.error = astcenc_compress_image(
-						work.context, work.image, &work.swizzle,
-						work.data_out, work.data_len, 0);
-				}
+				printf("Compression\n");
+				printf("===========\n");
+				printf("\n");
+			}
 
-				astcenc_compress_reset(thorough_context);
+			if (cli_config.thread_count > 1)
+			{
+				launch_threads("Thorough Compression", cli_config.thread_count, compression_workload_runner, &work);
+			}
+			else
+			{
+				work.error = astcenc_compress_image(
+					work.context, work.image, &work.swizzle,
+					work.data_out, work.data_len, 0);
+			}
+
+			astcenc_compress_reset(thorough_context);
+
+			if (config.progress_callback)
+			{
+				printf("\n\n");
 			}
 			double total_thorough_time = get_time() - start_thorough_time;
+			best_compression_time += total_thorough_time;
 
 			if (work.error != ASTCENC_SUCCESS)
 			{
@@ -2303,6 +2317,7 @@ int astcenc_main(
 
 		if (cli_config.lz_optimize)
 		{
+			double start_lz_time = get_time();
 			if (!cli_config.silentmode)
 			{
 				printf("Optimizing for LZ compression\n");
@@ -2310,6 +2325,8 @@ int astcenc_main(
 			int data_type = config.profile == ASTCENC_PRF_LDR || config.profile == ASTCENC_PRF_LDR_SRGB ? ASTCENC_TYPE_U8 : ASTCENC_TYPE_F16;
 			float channel_weights[4] = {config.cw_r_weight, config.cw_g_weight, config.cw_b_weight, config.cw_a_weight};
 			astcenc_optimize_for_lz(image_uncomp_in, image_uncomp_in_component_count, image_uncomp_in_is_hdr, &work.swizzle, buffer, buffer_exhaustive, buffer_size, blocks_x, blocks_y, blocks_z, config.block_x, config.block_y, config.block_z, data_type, channel_weights, cli_config.thread_count, cli_config.silentmode, cli_config.lz_optimize_rdo, cli_config.lz_optimize_effort);
+			double lz_time = get_time() - start_lz_time;
+			best_compression_time += lz_time;
 		}
 
 		// Clean up
